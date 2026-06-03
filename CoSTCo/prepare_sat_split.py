@@ -36,7 +36,6 @@ def main():
     train_order = order[:train_size]
     test_order = order[train_size:]
 
-    normalizer = float(np.max(values) - np.min(values))
     split_dir = os.path.dirname(args.split_path)
     if split_dir and not os.path.exists(split_dir):
         os.makedirs(split_dir)
@@ -48,7 +47,6 @@ def main():
         train_values=values[train_order],
         test_indices=indices[test_order],
         test_values=values[test_order],
-        normalizer=np.array(normalizer).astype("float32"),
         missing_rate=np.array(args.missing_rate).astype("float32"),
         seed=np.array(args.seed).astype("int32"),
     )
@@ -57,7 +55,6 @@ def main():
     print("Tensor shape:", tensor.shape)
     print("Train entries:", train_order.shape[0])
     print("Test entries:", test_order.shape[0])
-    print("Normalizer:", normalizer)
 
 
 if __name__ == "__main__":

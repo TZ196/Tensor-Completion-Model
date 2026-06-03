@@ -56,7 +56,6 @@ def get_or_create_split(tensor_path, split_path, missing_rate, seed):
             split["train_values"],
             split["test_indices"],
             split["test_values"],
-            float(split["normalizer"]),
         )
 
     tensor = load_tensor(tensor_path)
@@ -64,10 +63,6 @@ def get_or_create_split(tensor_path, split_path, missing_rate, seed):
     train_indices, train_values, test_indices, test_values = split_entries(
         indices, values, missing_rate, seed
     )
-
-    normalizer = float(np.max(values) - np.min(values))
-    if normalizer <= 0.0:
-        raise ValueError("Cannot compute normalized metrics: tensor range is 0")
 
     split_dir = os.path.dirname(split_path)
     if split_dir and not os.path.exists(split_dir):
@@ -80,7 +75,6 @@ def get_or_create_split(tensor_path, split_path, missing_rate, seed):
         train_values=train_values,
         test_indices=test_indices,
         test_values=test_values,
-        normalizer=np.array(normalizer).astype("float32"),
         missing_rate=np.array(missing_rate).astype("float32"),
         seed=np.array(seed).astype("int32"),
     )
@@ -91,7 +85,6 @@ def get_or_create_split(tensor_path, split_path, missing_rate, seed):
         train_values,
         test_indices,
         test_values,
-        normalizer,
     )
 
 
@@ -123,7 +116,7 @@ def main():
 
     configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
 
-    shape, train_indices, train_values, test_indices, test_values, normalizer = (
+    shape, train_indices, train_values, test_indices, test_values = (
         get_or_create_split(
             args.tensor_path,
             args.split_path,
@@ -136,7 +129,8 @@ def main():
     print("Train entries:", train_indices.shape[0])
     print("Test entries:", test_indices.shape[0])
     print("Missing rate:", args.missing_rate)
-    print("Metric normalizer (max-min):", normalizer)
+    print("NMAE denominator: sum(abs(true_values))")
+    print("NRMSE denominator: sqrt(sum(square(error)) / sum(square(true_values)))")
     print("Split path:", args.split_path)
 
     model = create_costco(shape, rank=args.rank, nc=args.nc)
@@ -168,14 +162,11 @@ def main():
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "seed": args.seed,
-            "normalizer": normalizer,
+            "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
+            "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },
-        "train": evaluate_costco(
-            model, train_indices, train_values, normalizer=normalizer
-        ),
-        "test": evaluate_costco(
-            model, test_indices, test_values, normalizer=normalizer
-        ),
+        "train": evaluate_costco(model, train_indices, train_values),
+        "test": evaluate_costco(model, test_indices, test_values),
     }
 
     pprint(results)

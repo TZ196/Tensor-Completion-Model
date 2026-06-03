@@ -23,12 +23,11 @@ The requested test metrics are:
 - NMAE
 - NRMSE
 
-Both normalized metrics use the original tensor value range as denominator:
+The normalized metrics are computed over the held-out missing-entry test set:
 
 ```text
-normalizer = max(tensor_values) - min(tensor_values)
-NMAE = MAE / normalizer
-NRMSE = RMSE / normalizer
+NMAE = sum(abs(y_true - y_pred)) / sum(abs(y_true))
+NRMSE = sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))
 ```
 
 ## Required Environment

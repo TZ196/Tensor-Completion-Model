@@ -17,12 +17,18 @@ def rmse(y_true, y_pred):
     return np.sqrt(np.mean(np.square(y_pred - y_true)))
 
 
-def nmae(y_true, y_pred, normalizer):
-    return mae(y_true, y_pred) / normalizer
+def nmae(y_true, y_pred):
+    denominator = np.sum(np.abs(y_true))
+    if denominator == 0.0:
+        raise ValueError("Cannot compute NMAE: sum(abs(y_true)) is 0")
+    return np.sum(np.abs(y_true - y_pred)) / denominator
 
 
-def nrmse(y_true, y_pred, normalizer):
-    return rmse(y_true, y_pred) / normalizer
+def nrmse(y_true, y_pred):
+    denominator = np.sum(np.square(y_true))
+    if denominator == 0.0:
+        raise ValueError("Cannot compute NRMSE: sum(square(y_true)) is 0")
+    return np.sqrt(np.sum(np.square(y_true - y_pred)) / denominator)
 
 
 def mape(y_true, y_pred, threshold=0.1):
@@ -97,8 +103,7 @@ def compile_costco(model, lr=1e-4):
     return model
 
 
-def evaluate_costco(model, indices, values, batch_size=1024, verbose=1,
-                    normalizer=None):
+def evaluate_costco(model, indices, values, batch_size=1024, verbose=1):
     pred = model.predict(
         transform_indices(indices),
         batch_size=batch_size,
@@ -107,9 +112,8 @@ def evaluate_costco(model, indices, values, batch_size=1024, verbose=1,
     metrics = {
         "rmse": float(rmse(values, pred)),
         "mape": float(mape(values, pred)),
-        "mae": float(mae(values, pred))
+        "mae": float(mae(values, pred)),
+        "nmae": float(nmae(values, pred)),
+        "nrmse": float(nrmse(values, pred))
     }
-    if normalizer is not None:
-        metrics["nmae"] = float(nmae(values, pred, normalizer))
-        metrics["nrmse"] = float(nrmse(values, pred, normalizer))
     return metrics
