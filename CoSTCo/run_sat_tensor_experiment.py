@@ -22,36 +22,38 @@ def load_tensor(path):
     return tensor.astype("float32")
 
 
-def finite_entries(tensor):
-    mask = np.isfinite(tensor)
+def finite_entries_in_time_range(tensor, start_t, end_t):
+    block = tensor[:, :, start_t:end_t]
+    mask = np.isfinite(block)
     indices = np.argwhere(mask).astype("int32")
-    values = tensor[mask].astype("float32")
+    indices[:, 2] += start_t
+    values = block[mask].astype("float32")
     return indices, values
 
 
-def split_entries(indices, values, missing_rate, seed):
-    if not 0.0 < missing_rate < 1.0:
-        raise ValueError("--missing-rate must be between 0 and 1")
-
-    rng = np.random.RandomState(seed)
-    order = rng.permutation(indices.shape[0])
-    train_size = int(round(indices.shape[0] * (1.0 - missing_rate)))
-    train_order = order[:train_size]
-    test_order = order[train_size:]
-
-    return (
-        indices[train_order],
-        values[train_order],
-        indices[test_order],
-        values[test_order],
-    )
-
-
-def create_split(tensor_path, split_path, missing_rate, seed):
+def create_temporal_split(tensor_path, split_path, train_ratio, val_ratio):
     tensor = load_tensor(tensor_path)
-    indices, values = finite_entries(tensor)
-    train_indices, train_values, test_indices, test_values = split_entries(
-        indices, values, missing_rate, seed
+    time_steps = tensor.shape[2]
+    if not 0.0 < train_ratio < 1.0:
+        raise ValueError("--train-ratio must be between 0 and 1")
+    if not 0.0 < val_ratio < 1.0:
+        raise ValueError("--val-ratio must be between 0 and 1")
+    if train_ratio + val_ratio >= 1.0:
+        raise ValueError("--train-ratio + --val-ratio must be less than 1")
+
+    train_end = int(round(time_steps * train_ratio))
+    val_end = train_end + int(round(time_steps * val_ratio))
+    train_end = max(1, min(train_end, time_steps - 2))
+    val_end = max(train_end + 1, min(val_end, time_steps - 1))
+
+    train_indices, train_values = finite_entries_in_time_range(
+        tensor, 0, train_end
+    )
+    val_indices, val_values = finite_entries_in_time_range(
+        tensor, train_end, val_end
+    )
+    test_indices, test_values = finite_entries_in_time_range(
+        tensor, val_end, time_steps
     )
 
     split_dir = os.path.dirname(split_path)
@@ -63,18 +65,26 @@ def create_split(tensor_path, split_path, missing_rate, seed):
         shape=np.array(tensor.shape).astype("int32"),
         train_indices=train_indices,
         train_values=train_values,
+        val_indices=val_indices,
+        val_values=val_values,
         test_indices=test_indices,
         test_values=test_values,
-        missing_rate=np.array(missing_rate).astype("float32"),
-        seed=np.array(seed).astype("int32"),
+        train_time_range=np.array([0, train_end]).astype("int32"),
+        val_time_range=np.array([train_end, val_end]).astype("int32"),
+        test_time_range=np.array([val_end, time_steps]).astype("int32"),
     )
 
     return (
         np.array(tensor.shape).astype("int32"),
         train_indices,
         train_values,
+        val_indices,
+        val_values,
         test_indices,
         test_values,
+        (0, train_end),
+        (train_end, val_end),
+        (val_end, time_steps),
     )
 
 
@@ -83,8 +93,9 @@ def parse_args():
         description="Run CoSTCo tensor completion on sat_path_bytes_tensor.npy."
     )
     parser.add_argument("--tensor-path", default="sat_path_bytes_tensor.npy")
-    parser.add_argument("--missing-rate", type=float, default=0.1)
     parser.add_argument("--split-path", default=None)
+    parser.add_argument("--train-ratio", type=float, default=0.7)
+    parser.add_argument("--val-ratio", type=float, default=0.15)
     parser.add_argument("--rank", type=int, default=20)
     parser.add_argument("--nc", type=int, default=None)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -101,24 +112,42 @@ def main():
     if args.split_path is None:
         args.split_path = os.path.join(
             "splits",
-            "missing_%d_seed_%d.npz" % (int(args.missing_rate * 100), args.seed)
+            "temporal_train%d_val%d_seed_%d.npz" % (
+                int(args.train_ratio * 100),
+                int(args.val_ratio * 100),
+                args.seed,
+            )
         )
 
     configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
 
-    shape, train_indices, train_values, test_indices, test_values = (
-        create_split(
+    (
+        shape,
+        train_indices,
+        train_values,
+        val_indices,
+        val_values,
+        test_indices,
+        test_values,
+        train_time_range,
+        val_time_range,
+        test_time_range,
+    ) = (
+        create_temporal_split(
             args.tensor_path,
             args.split_path,
-            args.missing_rate,
-            args.seed,
+            args.train_ratio,
+            args.val_ratio,
         )
     )
 
     print("Tensor shape:", shape.tolist())
     print("Train entries:", train_indices.shape[0])
+    print("Validation entries:", val_indices.shape[0])
     print("Test entries:", test_indices.shape[0])
-    print("Missing rate:", args.missing_rate)
+    print("Train time range:", train_time_range)
+    print("Validation time range:", val_time_range)
+    print("Test time range:", test_time_range)
     print("NMAE denominator: sum(abs(true_values))")
     print("NRMSE denominator: sqrt(sum(square(error)) / sum(square(true_values)))")
     print("Split path:", args.split_path)
@@ -131,7 +160,7 @@ def main():
         verbose=1,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        validation_split=0.1,
+        validation_data=(transform_indices(val_indices), val_values),
         callbacks=[
             k.callbacks.EarlyStopping(
                 monitor="val_mae",
@@ -144,7 +173,13 @@ def main():
     results = {
         "config": {
             "tensor_path": args.tensor_path,
-            "missing_rate": args.missing_rate,
+            "split_mode": "temporal",
+            "train_ratio": args.train_ratio,
+            "val_ratio": args.val_ratio,
+            "test_ratio": 1.0 - args.train_ratio - args.val_ratio,
+            "train_time_range": train_time_range,
+            "val_time_range": val_time_range,
+            "test_time_range": test_time_range,
             "split_path": args.split_path,
             "rank": args.rank,
             "nc": args.nc if args.nc is not None else args.rank,
@@ -156,6 +191,7 @@ def main():
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },
         "train": evaluate_costco(model, train_indices, train_values),
+        "val": evaluate_costco(model, val_indices, val_values),
         "test": evaluate_costco(model, test_indices, test_values),
     }
 

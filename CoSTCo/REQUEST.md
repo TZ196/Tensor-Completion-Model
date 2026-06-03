@@ -10,13 +10,21 @@ The dataset is a dense 3-D tensor with shape:
 120 x 120 x 60
 ```
 
-The experiment uses a 10% missing rate:
+The experiment uses a continuous temporal split along the third tensor axis:
 
-- 90% finite tensor entries are used as the training observed entries.
-- 10% finite tensor entries are held out as the test missing entries.
-- The split is random but reproducible with `--seed 3`.
+- The first 70% time slices are used for training.
+- The next 15% time slices are used for validation.
+- The last 15% time slices are used for testing.
 - The split is generated automatically by `run_sat_tensor_experiment.py`.
-- The generated split is saved to `splits/missing_10_seed_3.npz` for reproducibility.
+- The generated split is saved to `splits/temporal_train70_val15_seed_3.npz` for reproducibility.
+
+For the `120 x 120 x 60` tensor, the default split is:
+
+```text
+train: t = 0..41
+val:   t = 42..50
+test:  t = 51..59
+```
 
 The requested test metrics are:
 
@@ -73,7 +81,8 @@ Example with explicit hyperparameters:
 ```bash
 python run_sat_tensor_experiment.py \
   --tensor-path sat_path_bytes_tensor.npy \
-  --missing-rate 0.1 \
+  --train-ratio 0.7 \
+  --val-ratio 0.15 \
   --rank 20 \
   --epochs 50 \
   --batch-size 256 \
@@ -86,7 +95,7 @@ python run_sat_tensor_experiment.py \
 The script writes:
 
 ```text
-splits/missing_10_seed_3.npz
+splits/temporal_train70_val15_seed_3.npz
 results_sat_costco.json
 ```
 
