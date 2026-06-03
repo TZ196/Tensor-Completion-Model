@@ -31,7 +31,22 @@ def finite_entries_in_time_range(tensor, start_t, end_t):
     return indices, values
 
 
-def create_temporal_split(tensor_path, split_path, train_ratio, val_ratio):
+def apply_missing_mask(indices, values, missing_rate, seed):
+    if not 0.0 <= missing_rate < 1.0:
+        raise ValueError("--missing-rate must be in [0, 1)")
+    if missing_rate == 0.0:
+        return indices, values
+
+    rng = np.random.RandomState(seed)
+    order = rng.permutation(indices.shape[0])
+    observed_size = int(round(indices.shape[0] * (1.0 - missing_rate)))
+    observed_size = max(1, observed_size)
+    observed_order = order[:observed_size]
+    return indices[observed_order], values[observed_order]
+
+
+def create_temporal_split(tensor_path, split_path, train_ratio, val_ratio,
+                          missing_rate, seed):
     tensor = load_tensor(tensor_path)
     time_steps = tensor.shape[2]
     if not 0.0 < train_ratio < 1.0:
@@ -48,6 +63,13 @@ def create_temporal_split(tensor_path, split_path, train_ratio, val_ratio):
 
     train_indices, train_values = finite_entries_in_time_range(
         tensor, 0, train_end
+    )
+    full_train_entries = train_indices.shape[0]
+    train_indices, train_values = apply_missing_mask(
+        train_indices,
+        train_values,
+        missing_rate,
+        seed,
     )
     val_indices, val_values = finite_entries_in_time_range(
         tensor, train_end, val_end
@@ -72,6 +94,10 @@ def create_temporal_split(tensor_path, split_path, train_ratio, val_ratio):
         train_time_range=np.array([0, train_end]).astype("int32"),
         val_time_range=np.array([train_end, val_end]).astype("int32"),
         test_time_range=np.array([val_end, time_steps]).astype("int32"),
+        train_missing_rate=np.array(missing_rate).astype("float32"),
+        full_train_entries=np.array(full_train_entries).astype("int32"),
+        observed_train_entries=np.array(train_indices.shape[0]).astype("int32"),
+        seed=np.array(seed).astype("int32"),
     )
 
     return (
@@ -85,6 +111,7 @@ def create_temporal_split(tensor_path, split_path, train_ratio, val_ratio):
         (0, train_end),
         (train_end, val_end),
         (val_end, time_steps),
+        full_train_entries,
     )
 
 
@@ -96,6 +123,7 @@ def parse_args():
     parser.add_argument("--split-path", default=None)
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
+    parser.add_argument("--missing-rate", type=float, default=0.1)
     parser.add_argument("--rank", type=int, default=20)
     parser.add_argument("--nc", type=int, default=None)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -112,9 +140,10 @@ def main():
     if args.split_path is None:
         args.split_path = os.path.join(
             "splits",
-            "temporal_train%d_val%d_seed_%d.npz" % (
+            "temporal_train%d_val%d_missing%d_seed_%d.npz" % (
                 int(args.train_ratio * 100),
                 int(args.val_ratio * 100),
+                int(args.missing_rate * 100),
                 args.seed,
             )
         )
@@ -132,17 +161,22 @@ def main():
         train_time_range,
         val_time_range,
         test_time_range,
+        full_train_entries,
     ) = (
         create_temporal_split(
             args.tensor_path,
             args.split_path,
             args.train_ratio,
             args.val_ratio,
+            args.missing_rate,
+            args.seed,
         )
     )
 
     print("Tensor shape:", shape.tolist())
-    print("Train entries:", train_indices.shape[0])
+    print("Full train-time entries:", full_train_entries)
+    print("Observed train entries:", train_indices.shape[0])
+    print("Training missing rate:", args.missing_rate)
     print("Validation entries:", val_indices.shape[0])
     print("Test entries:", test_indices.shape[0])
     print("Train time range:", train_time_range)
@@ -177,6 +211,9 @@ def main():
             "train_ratio": args.train_ratio,
             "val_ratio": args.val_ratio,
             "test_ratio": 1.0 - args.train_ratio - args.val_ratio,
+            "train_missing_rate": args.missing_rate,
+            "full_train_entries": full_train_entries,
+            "observed_train_entries": int(train_indices.shape[0]),
             "train_time_range": train_time_range,
             "val_time_range": val_time_range,
             "test_time_range": test_time_range,
