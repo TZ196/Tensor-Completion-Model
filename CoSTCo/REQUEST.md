@@ -10,38 +10,30 @@ The dataset is a dense 3-D tensor with shape:
 120 x 120 x 60
 ```
 
-The experiment follows a Satformer-style temporal split plus random masking:
+The experiment follows a transductive tensor completion split:
 
-- The first 80% time slices are used as the train/validation period.
-- Within that period, the last 10% is used for validation.
-- The last 20% time slices are used for testing.
+- All finite entries from the full `N x N x T` tensor are considered.
+- A random subset is sampled as observed training entries.
+- Validation and test entries are sampled from the remaining unobserved entries.
+- All time slices may appear in the training set, so time embeddings are trained
+  for the same temporal range used by validation and testing.
 - The split is generated automatically by `run_sat_tensor_experiment.py`.
-- The generated split is saved to `splits/temporal_train80_val10_observed10_seed_3.npz` for reproducibility.
+- The generated split is saved to `splits/random_observed10_val10_seed_3.npz` for reproducibility.
 
-Inside train, validation, and test periods, a configurable random mask is
-applied to simulate incomplete traffic observations:
+The observed ratio controls how many tensor entries are used for training:
 
 ```text
 --observed-ratio 0.1
 ```
 
 With the default `--observed-ratio 0.1`, 10% of entries are observed and 90%
-are masked. The model is trained using train observed entries. Validation and
-test metrics are computed only on the masked/unobserved entries in their
-respective time periods.
+are unobserved. Of the unobserved entries, `--val-ratio 0.1` is used for
+validation and the rest is used for final testing.
 
 The equivalent missing-rate form is:
 
 ```text
 --missing-rate 0.9
-```
-
-For the `120 x 120 x 60` tensor, the default split is:
-
-```text
-train: t = 0..42
-val:   t = 43..47
-test:  t = 48..59
 ```
 
 The requested test metrics are:
@@ -99,7 +91,6 @@ Example with explicit hyperparameters:
 ```bash
 python run_sat_tensor_experiment.py \
   --tensor-path sat_path_bytes_tensor.npy \
-  --train-ratio 0.8 \
   --val-ratio 0.1 \
   --observed-ratio 0.1 \
   --rank 20 \
@@ -114,10 +105,9 @@ python run_sat_tensor_experiment.py \
 The script writes:
 
 ```text
-splits/temporal_train80_val10_observed10_seed_3.npz
+splits/random_observed10_val10_seed_3.npz
 results_sat_costco.json
 ```
 
-`results_sat_costco.json` contains metrics for train observed, train missing,
-validation missing, and test missing entries. The final test NMAE/NRMSE should
-be read from `test_missing`.
+`results_sat_costco.json` contains train, validation, and test metrics. The
+final test NMAE/NRMSE should be read from `test`.
