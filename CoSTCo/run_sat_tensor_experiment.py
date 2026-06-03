@@ -1,18 +1,16 @@
-from __future__ import print_function
-
 import argparse
 import json
 import os
 from pprint import pprint
 
-import keras as k
 import numpy as np
+from tensorflow import keras as k
 
 from costco_model import (
     compile_costco,
+    configure_tensorflow,
     create_costco,
     evaluate_costco,
-    set_tf_session,
     transform_indices,
 )
 
@@ -123,8 +121,7 @@ def main():
             "missing_%d_seed_%d.npz" % (int(args.missing_rate * 100), args.seed)
         )
 
-    device_count = {"GPU": 0} if args.cpu_only else None
-    set_tf_session(device_count=device_count, seed=args.seed)
+    configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
 
     shape, train_indices, train_values, test_indices, test_values, normalizer = (
         get_or_create_split(
@@ -153,7 +150,7 @@ def main():
         validation_split=0.1,
         callbacks=[
             k.callbacks.EarlyStopping(
-                monitor="val_mean_absolute_error",
+                monitor="val_mae",
                 patience=10,
                 restore_best_weights=True
             )

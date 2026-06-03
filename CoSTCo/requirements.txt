@@ -1,5 +1,2 @@
-tensorflow==1.14.0
-keras==2.2.4
-numpy==1.16.6
-h5py==2.10.0
-pyyaml==5.4.1
+tensorflow==2.15.0
+numpy==1.26.4

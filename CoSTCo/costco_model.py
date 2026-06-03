@@ -1,8 +1,6 @@
-from __future__ import print_function
-
 import numpy as np
 import tensorflow as tf
-import keras as k
+from tensorflow import keras as k
 
 
 def mape_keras(y_true, y_pred, threshold=0.1):
@@ -38,22 +36,18 @@ def transform_indices(indices):
     return [indices[:, i] for i in range(indices.shape[1])]
 
 
-def set_tf_session(device_count=None, seed=0):
-    gpu_options = tf.GPUOptions(allow_growth=True)
-    if device_count is not None:
-        config = tf.ConfigProto(
-            gpu_options=gpu_options,
-            device_count=device_count
-        )
-    else:
-        config = tf.ConfigProto(gpu_options=gpu_options)
-
-    sess = tf.Session(config=config)
-    k.backend.set_session(sess)
-
+def configure_tensorflow(cpu_only=False, seed=0):
     np.random.seed(seed)
-    tf.set_random_seed(seed)
-    return sess
+    tf.random.set_seed(seed)
+
+    gpus = tf.config.list_physical_devices("GPU")
+    if cpu_only:
+        tf.config.set_visible_devices([], "GPU")
+        return []
+
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+    return gpus
 
 
 def create_costco(shape, rank=20, nc=None):
@@ -98,8 +92,8 @@ def create_costco(shape, rank=20, nc=None):
 
 
 def compile_costco(model, lr=1e-4):
-    optimizer = k.optimizers.Adam(lr=lr)
-    model.compile(optimizer, loss=["mse"], metrics=["mae", mape_keras])
+    optimizer = k.optimizers.Adam(learning_rate=lr)
+    model.compile(optimizer, loss="mse", metrics=["mae", mape_keras])
     return model
 
 

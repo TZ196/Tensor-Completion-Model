@@ -33,12 +33,10 @@ NRMSE = RMSE / normalizer
 
 ## Required Environment
 
-This extracted CoSTCo implementation follows the original KDD19 demo, which uses Python 2 and TensorFlow 1.x.
-
 Recommended environment:
 
 ```bash
-conda create -n costco python=2.7 pip
+conda create -n costco python=3.10 pip
 conda activate costco
 pip install -r requirements.txt
 ```
@@ -46,18 +44,13 @@ pip install -r requirements.txt
 `requirements.txt` installs:
 
 ```text
-tensorflow==1.14.0
-keras==2.2.4
-numpy==1.16.6
-h5py==2.10.0
-pyyaml==5.4.1
+tensorflow==2.15.0
+numpy==1.26.4
 ```
 
-For GPU execution, use a TensorFlow 1.14 compatible CUDA/cuDNN stack, typically CUDA 10.0 and cuDNN 7.x. If the server uses GPU TensorFlow, replace `tensorflow==1.14.0` with:
+For GPU execution, use a TensorFlow 2.15 compatible NVIDIA driver/CUDA setup. On Linux, the `tensorflow==2.15.0` pip package includes the needed CUDA runtime dependencies for supported NVIDIA GPU environments.
 
-```text
-tensorflow-gpu==1.14.0
-```
+The code uses `tensorflow.keras`; no separate `keras` package is required.
 
 ## Run Command
 
