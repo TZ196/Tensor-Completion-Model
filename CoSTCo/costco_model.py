@@ -122,6 +122,12 @@ def evaluate_costco(model, indices, values, batch_size=1024, verbose=1,
         "rmse": float(rmse(values, pred)),
         "mae": float(mae(values, pred)),
         "nmae": float(nmae(values, pred)),
-        "nrmse": float(nrmse(values, pred))
+        "nrmse": float(nrmse(values, pred)),
+        "y_true_min": float(np.min(values)),
+        "y_true_max": float(np.max(values)),
+        "y_true_mean": float(np.mean(values)),
+        "y_pred_min": float(np.min(pred)),
+        "y_pred_max": float(np.max(pred)),
+        "y_pred_mean": float(np.mean(pred)),
     }
     return metrics
