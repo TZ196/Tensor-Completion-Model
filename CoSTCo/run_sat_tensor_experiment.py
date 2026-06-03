@@ -47,17 +47,7 @@ def split_entries(indices, values, missing_rate, seed):
     )
 
 
-def get_or_create_split(tensor_path, split_path, missing_rate, seed):
-    if os.path.exists(split_path):
-        split = np.load(split_path)
-        return (
-            split["shape"],
-            split["train_indices"],
-            split["train_values"],
-            split["test_indices"],
-            split["test_values"],
-        )
-
+def create_split(tensor_path, split_path, missing_rate, seed):
     tensor = load_tensor(tensor_path)
     indices, values = finite_entries(tensor)
     train_indices, train_values, test_indices, test_values = split_entries(
@@ -117,7 +107,7 @@ def main():
     configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
 
     shape, train_indices, train_values, test_indices, test_values = (
-        get_or_create_split(
+        create_split(
             args.tensor_path,
             args.split_path,
             args.missing_rate,

@@ -15,8 +15,8 @@ The experiment uses a 10% missing rate:
 - 90% finite tensor entries are used as the training observed entries.
 - 10% finite tensor entries are held out as the test missing entries.
 - The split is random but reproducible with `--seed 3`.
-- The split is saved to `splits/missing_10_seed_3.npz`.
-- This repository already includes the prepared split file after running `prepare_sat_split.py`.
+- The split is generated automatically by `run_sat_tensor_experiment.py`.
+- The generated split is saved to `splits/missing_10_seed_3.npz` for reproducibility.
 
 The requested test metrics are:
 
@@ -60,12 +60,6 @@ From this directory:
 
 ```bash
 python run_sat_tensor_experiment.py
-```
-
-If the split file needs to be regenerated:
-
-```bash
-python prepare_sat_split.py
 ```
 
 CPU-only run:
