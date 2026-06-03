@@ -8,10 +8,10 @@ import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Prepare a reproducible 90% missing-rate train/test split."
+        description="Prepare a reproducible train/test split."
     )
     parser.add_argument("--tensor-path", default="sat_path_bytes_tensor.npy")
-    parser.add_argument("--missing-rate", type=float, default=0.9)
+    parser.add_argument("--missing-rate", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--split-path", default=None)
     return parser.parse_args()

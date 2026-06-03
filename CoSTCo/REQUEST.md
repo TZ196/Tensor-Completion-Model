@@ -10,12 +10,12 @@ The dataset is a dense 3-D tensor with shape:
 120 x 120 x 60
 ```
 
-The experiment uses a 90% missing rate:
+The experiment uses a 10% missing rate:
 
-- 10% finite tensor entries are used as the training observed entries.
-- 90% finite tensor entries are held out as the test missing entries.
+- 90% finite tensor entries are used as the training observed entries.
+- 10% finite tensor entries are held out as the test missing entries.
 - The split is random but reproducible with `--seed 3`.
-- The split is saved to `splits/missing_90_seed_3.npz`.
+- The split is saved to `splits/missing_10_seed_3.npz`.
 - This repository already includes the prepared split file after running `prepare_sat_split.py`.
 
 The requested test metrics are:
@@ -79,7 +79,7 @@ Example with explicit hyperparameters:
 ```bash
 python run_sat_tensor_experiment.py \
   --tensor-path sat_path_bytes_tensor.npy \
-  --missing-rate 0.9 \
+  --missing-rate 0.1 \
   --rank 20 \
   --epochs 50 \
   --batch-size 256 \
@@ -92,7 +92,7 @@ python run_sat_tensor_experiment.py \
 The script writes:
 
 ```text
-splits/missing_90_seed_3.npz
+splits/missing_10_seed_3.npz
 results_sat_costco.json
 ```
 
