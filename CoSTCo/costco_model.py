@@ -3,12 +3,6 @@ import tensorflow as tf
 from tensorflow import keras as k
 
 
-def mape_keras(y_true, y_pred, threshold=0.1):
-    v = k.backend.clip(k.backend.abs(y_true), threshold, None)
-    diff = k.backend.abs((y_true - y_pred) / v)
-    return 100.0 * k.backend.mean(diff, axis=-1)
-
-
 def mae(y_true, y_pred):
     return np.mean(np.abs(y_pred - y_true))
 
@@ -29,12 +23,6 @@ def nrmse(y_true, y_pred):
     if denominator == 0.0:
         raise ValueError("Cannot compute NRMSE: sum(square(y_true)) is 0")
     return np.sqrt(np.sum(np.square(y_true - y_pred)) / denominator)
-
-
-def mape(y_true, y_pred, threshold=0.1):
-    v = np.clip(np.abs(y_true), threshold, None)
-    diff = np.abs((y_true - y_pred) / v)
-    return 100.0 * np.mean(diff, axis=-1).mean()
 
 
 def transform_indices(indices):
@@ -99,7 +87,7 @@ def create_costco(shape, rank=20, nc=None):
 
 def compile_costco(model, lr=1e-4):
     optimizer = k.optimizers.Adam(learning_rate=lr)
-    model.compile(optimizer, loss="mse", metrics=["mae", mape_keras])
+    model.compile(optimizer, loss="mse", metrics=["mae"])
     return model
 
 
@@ -111,7 +99,6 @@ def evaluate_costco(model, indices, values, batch_size=1024, verbose=1):
     ).flatten()
     metrics = {
         "rmse": float(rmse(values, pred)),
-        "mape": float(mape(values, pred)),
         "mae": float(mae(values, pred)),
         "nmae": float(nmae(values, pred)),
         "nrmse": float(nrmse(values, pred))

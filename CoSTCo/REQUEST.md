@@ -23,6 +23,9 @@ The requested test metrics are:
 - NMAE
 - NRMSE
 
+MAPE is not used because traffic values can be zero or close to zero, which
+can make percentage errors unstable or misleading.
+
 The normalized metrics are computed over the held-out missing-entry test set:
 
 ```text
