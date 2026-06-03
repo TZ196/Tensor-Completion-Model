@@ -12,6 +12,7 @@ from costco_model import (
     create_costco,
     evaluate_costco,
     transform_indices,
+    transform_targets,
 )
 
 
@@ -103,6 +104,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument("--metrics-path", default="results_sat_costco.json")
+    parser.add_argument(
+        "--target-transform",
+        choices=["log1p", "none"],
+        default="log1p",
+        help="Transform training targets; metrics are always computed on the original scale.",
+    )
     return parser.parse_args()
 
 
@@ -129,15 +136,21 @@ def main():
     print("Train entries:", train_indices.shape[0])
     print("Test entries:", test_indices.shape[0])
     print("Missing rate:", args.missing_rate)
+    print("Target transform:", args.target_transform)
+    print("Metrics scale: original traffic values")
     print("NMAE denominator: sum(abs(true_values))")
     print("NRMSE denominator: sqrt(sum(square(error)) / sum(square(true_values)))")
     print("Split path:", args.split_path)
 
     model = create_costco(shape, rank=args.rank, nc=args.nc)
     compile_costco(model, lr=args.lr)
+    train_targets = transform_targets(
+        train_values,
+        target_transform=args.target_transform,
+    )
     model.fit(
         x=transform_indices(train_indices),
-        y=train_values,
+        y=train_targets,
         verbose=1,
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -162,11 +175,23 @@ def main():
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "seed": args.seed,
+            "target_transform": args.target_transform,
+            "metrics_scale": "original",
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },
-        "train": evaluate_costco(model, train_indices, train_values),
-        "test": evaluate_costco(model, test_indices, test_values),
+        "train": evaluate_costco(
+            model,
+            train_indices,
+            train_values,
+            target_transform=args.target_transform,
+        ),
+        "test": evaluate_costco(
+            model,
+            test_indices,
+            test_values,
+            target_transform=args.target_transform,
+        ),
     }
 
     pprint(results)

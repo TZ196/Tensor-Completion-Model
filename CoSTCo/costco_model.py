@@ -25,6 +25,24 @@ def nrmse(y_true, y_pred):
     return np.sqrt(np.sum(np.square(y_true - y_pred)) / denominator)
 
 
+def transform_targets(values, target_transform="log1p"):
+    if target_transform == "none":
+        return values
+    if target_transform == "log1p":
+        if np.any(values < 0):
+            raise ValueError("log1p target transform requires non-negative values")
+        return np.log1p(values)
+    raise ValueError("Unsupported target transform: %s" % target_transform)
+
+
+def inverse_transform_targets(values, target_transform="log1p"):
+    if target_transform == "none":
+        return values
+    if target_transform == "log1p":
+        return np.expm1(values)
+    raise ValueError("Unsupported target transform: %s" % target_transform)
+
+
 def transform_indices(indices):
     """Convert an (n_samples, n_modes) index matrix to Keras input arrays."""
     return [indices[:, i] for i in range(indices.shape[1])]
@@ -91,12 +109,15 @@ def compile_costco(model, lr=1e-4):
     return model
 
 
-def evaluate_costco(model, indices, values, batch_size=1024, verbose=1):
+def evaluate_costco(model, indices, values, batch_size=1024, verbose=1,
+                    target_transform="log1p"):
     pred = model.predict(
         transform_indices(indices),
         batch_size=batch_size,
         verbose=verbose
     ).flatten()
+    pred = inverse_transform_targets(pred, target_transform=target_transform)
+    pred = np.maximum(pred, 0.0)
     metrics = {
         "rmse": float(rmse(values, pred)),
         "mae": float(mae(values, pred)),
