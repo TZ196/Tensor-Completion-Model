@@ -33,21 +33,6 @@ NMAE = sum(abs(y_true - y_pred)) / sum(abs(y_true))
 NRMSE = sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))
 ```
 
-The model is trained with a log target transform:
-
-```text
-y_train_model = log1p(y_train_original)
-```
-
-Predictions are transformed back before evaluation:
-
-```text
-y_pred_original = expm1(y_pred_model)
-```
-
-All reported metrics are computed on the original traffic scale, not on the
-log-transformed scale.
-
 ## Required Environment
 
 Recommended environment:
@@ -99,7 +84,6 @@ python run_sat_tensor_experiment.py \
   --epochs 50 \
   --batch-size 256 \
   --lr 1e-4 \
-  --target-transform log1p \
   --seed 3
 ```
 
