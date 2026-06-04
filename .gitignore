@@ -1,9 +1,9 @@
 __pycache__/
 *.pyc
 CostCO_git_backup/
-CostCO/CoSTCo/__pycache__/
-CostCO/CoSTCo/results/
-CostCO/CoSTCo/splits/
+CostCO/__pycache__/
+CostCO/results/
+CostCO/splits/
 Satfomer/__pycache__/
 Satfomer/results/
 Satfomer/splits/
