@@ -259,3 +259,19 @@ class SatFormer(nn.Module):
                 step_h = self._run_module(module, step_h, adjacency)
             decoded.append(self.output_projection(step_h).unsqueeze(-1))
         return torch.cat(decoded, dim=-1)
+
+    def forward_time_window(self, x_window, adjacency_window, target_offset=-1):
+        encoded = []
+        for time_step in range(x_window.size(-1)):
+            h = self.input_projection(x_window[:, :, time_step])
+            adjacency = adjacency_window[:, :, time_step]
+            for module in self.encoder:
+                h = self._run_module(module, h, adjacency)
+            encoded.append(h)
+
+        transferred = self._run_transfer(torch.stack(encoded, dim=0))
+        target_h = transferred[target_offset]
+        target_adjacency = adjacency_window[:, :, target_offset]
+        for module in self.decoder:
+            target_h = self._run_module(module, target_h, target_adjacency)
+        return self.output_projection(target_h)

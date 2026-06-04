@@ -62,6 +62,21 @@ NRMSE = sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))
 Metrics are computed on the original traffic scale. Training targets are
 normalized by `max(train_values)` by default.
 
+Training uses the paper-style settings by default:
+
+- Adam optimizer;
+- learning rate `0.001`;
+- weight decay `1e-5`;
+- mini-batch size `128`;
+- warmup for the first `5` epochs;
+- early stopping with patience `10`;
+- no 10-run averaging.
+
+The training loop is mini-batch based over target tensor entries grouped by
+time step. It no longer performs one full `120 x 120 x 60` reconstruction
+backward pass per epoch. The temporal Transfer Module uses a history window;
+the default is `8` time steps. Use `--history-window 0` for full history.
+
 ## Environment
 
 ```bash
@@ -102,6 +117,9 @@ python run_sat_tensor_experiment.py \
   --region-size 16 \
   --center-window 16 \
   --heads 8 \
+  --batch-size 128 \
+  --history-window 8 \
+  --warmup-epochs 5 \
   --epochs 200 \
   --lr 0.001 \
   --target-normalization max \

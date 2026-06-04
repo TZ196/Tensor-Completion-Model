@@ -126,6 +126,9 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--history-window", type=int, default=8)
+    parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument(
         "--target-normalization",
@@ -138,13 +141,26 @@ def parse_args():
     return parser.parse_args()
 
 
-def default_output_path(output_dir, observed_ratio, val_ratio, seed, feature_dim, num_modules, target_normalization):
-    name = "random_observed%d_val%d_seed%d_dim%d_layers%d_norm_%s.json" % (
+def default_output_path(
+    output_dir,
+    observed_ratio,
+    val_ratio,
+    seed,
+    feature_dim,
+    num_modules,
+    batch_size,
+    history_window,
+    target_normalization,
+):
+    history_label = "full" if history_window <= 0 else str(history_window)
+    name = "random_observed%d_val%d_seed%d_dim%d_layers%d_batch%d_hist%s_norm_%s.json" % (
         int(round(observed_ratio * 100)),
         int(round(val_ratio * 100)),
         seed,
         feature_dim,
         num_modules,
+        batch_size,
+        history_label,
         target_normalization,
     )
     return os.path.join(output_dir, name)
@@ -181,6 +197,88 @@ def gather_entries(tensor, indices):
     return tensor[idx[:, 0], idx[:, 1], idx[:, 2]]
 
 
+def iter_time_entry_batches(indices, values, batch_size, rng):
+    time_steps = np.unique(indices[:, 2])
+    rng.shuffle(time_steps)
+    for time_step in time_steps:
+        time_positions = np.flatnonzero(indices[:, 2] == time_step)
+        time_positions = time_positions[rng.permutation(time_positions.shape[0])]
+        for start in range(0, time_positions.shape[0], batch_size):
+            positions = time_positions[start : start + batch_size]
+            yield int(time_step), indices[positions], values[positions]
+
+
+def time_window_bounds(time_step, history_window):
+    if history_window <= 0:
+        return 0, time_step
+    return max(0, time_step - history_window + 1), time_step
+
+
+def predict_entries_for_time(
+    model,
+    input_tensor,
+    adjacency_tensor,
+    time_step,
+    entry_indices,
+    history_window,
+):
+    start, end = time_window_bounds(time_step, history_window)
+    target_offset = time_step - start
+    prediction_matrix = model.forward_time_window(
+        input_tensor[:, :, start : end + 1],
+        adjacency_tensor[:, :, start : end + 1],
+        target_offset=target_offset,
+    )
+    rows = torch.as_tensor(entry_indices[:, 0], dtype=torch.long, device=input_tensor.device)
+    cols = torch.as_tensor(entry_indices[:, 1], dtype=torch.long, device=input_tensor.device)
+    return prediction_matrix[rows, cols]
+
+
+def set_warmup_lr(optimizer, base_lr, epoch, warmup_epochs):
+    if warmup_epochs <= 0:
+        lr = base_lr
+    else:
+        lr = base_lr * min(1.0, float(epoch + 1) / float(warmup_epochs))
+    for group in optimizer.param_groups:
+        group["lr"] = lr
+    return lr
+
+
+def evaluate_mse_loss(
+    model,
+    input_tensor,
+    adjacency_tensor,
+    indices,
+    values,
+    target_scale,
+    history_window,
+    device,
+):
+    model.eval()
+    squared_error = 0.0
+    count = 0
+    with torch.no_grad():
+        for time_step in np.unique(indices[:, 2]):
+            positions = np.flatnonzero(indices[:, 2] == time_step)
+            batch_indices = indices[positions]
+            targets = torch.as_tensor(
+                values[positions] / target_scale,
+                dtype=torch.float32,
+                device=device,
+            )
+            predictions = predict_entries_for_time(
+                model,
+                input_tensor,
+                adjacency_tensor,
+                int(time_step),
+                batch_indices,
+                history_window,
+            )
+            squared_error += torch.sum((predictions - targets) ** 2).item()
+            count += targets.numel()
+    return squared_error / max(1, count)
+
+
 def mae(y_true, y_pred):
     return np.mean(np.abs(y_pred - y_true))
 
@@ -203,11 +301,31 @@ def nrmse(y_true, y_pred):
     return np.sqrt(np.sum(np.square(y_true - y_pred)) / denominator)
 
 
-def evaluate_satformer(model, input_tensor, adjacency_tensor, indices, values, target_scale):
+def evaluate_satformer(
+    model,
+    input_tensor,
+    adjacency_tensor,
+    indices,
+    values,
+    target_scale,
+    history_window,
+):
     model.eval()
+    predictions = np.empty(values.shape[0], dtype="float32")
     with torch.no_grad():
-        pred = gather_entries(model(input_tensor, adjacency_tensor), indices)
-        pred = pred.detach().cpu().numpy().astype("float32") * target_scale
+        for time_step in np.unique(indices[:, 2]):
+            positions = np.flatnonzero(indices[:, 2] == time_step)
+            batch_indices = indices[positions]
+            pred = predict_entries_for_time(
+                model,
+                input_tensor,
+                adjacency_tensor,
+                int(time_step),
+                batch_indices,
+                history_window,
+            )
+            predictions[positions] = pred.detach().cpu().numpy().astype("float32")
+    pred = predictions * target_scale
     pred = np.maximum(pred, 0.0)
     return {
         "rmse": float(rmse(values, pred)),
@@ -251,6 +369,8 @@ def main():
             args.seed,
             args.feature_dim,
             args.num_modules,
+            args.batch_size,
+            args.history_window,
             args.target_normalization,
         )
 
@@ -279,8 +399,6 @@ def main():
 
     target_scale = get_target_scale(train_values, args.target_normalization)
     input_tensor = build_observed_tensor(shape, train_indices, train_values, target_scale, device)
-    train_targets = torch.as_tensor(train_values / target_scale, dtype=torch.float32, device=device)
-    val_targets = torch.as_tensor(val_values / target_scale, dtype=torch.float32, device=device)
 
     model = SatFormer(
         num_nodes=int(shape[0]),
@@ -311,37 +429,76 @@ def main():
     print("Metrics path:", args.metrics_path)
     print("Target normalization:", args.target_normalization)
     print("Target scale:", target_scale)
+    print("Batch size:", args.batch_size)
+    print("History window:", "full" if args.history_window <= 0 else args.history_window)
+    print("Warmup epochs:", args.warmup_epochs)
     print("Gradient checkpointing:", not args.no_gradient_checkpointing)
 
     best_val = float("inf")
     best_state = None
     stale_epochs = 0
+    rng = np.random.RandomState(args.seed)
     for epoch in range(args.epochs):
+        current_lr = set_warmup_lr(optimizer, args.lr, epoch, args.warmup_epochs)
         model.train()
-        optimizer.zero_grad()
-        output = model(input_tensor, adjacency_tensor)
-        train_pred = gather_entries(output, train_indices)
-        train_loss = criterion(train_pred, train_targets)
-        train_loss.backward()
-        optimizer.step()
-        train_loss_value = train_loss.item()
-        del output, train_pred, train_loss
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+        epoch_loss_sum = 0.0
+        epoch_entry_count = 0
+        epoch_batch_count = 0
+        for time_step, batch_indices, batch_values in iter_time_entry_batches(
+            train_indices,
+            train_values,
+            args.batch_size,
+            rng,
+        ):
+            optimizer.zero_grad(set_to_none=True)
+            predictions = predict_entries_for_time(
+                model,
+                input_tensor,
+                adjacency_tensor,
+                time_step,
+                batch_indices,
+                args.history_window,
+            )
+            targets = torch.as_tensor(
+                batch_values / target_scale,
+                dtype=torch.float32,
+                device=device,
+            )
+            train_loss = criterion(predictions, targets)
+            train_loss.backward()
+            optimizer.step()
 
-        model.eval()
-        with torch.no_grad():
-            output = model(input_tensor, adjacency_tensor)
-            val_pred = gather_entries(output, val_indices)
-            val_loss = criterion(val_pred, val_targets)
-            val_loss_value = val_loss.item()
-        del output, val_pred, val_loss
+            batch_size = targets.numel()
+            epoch_loss_sum += train_loss.item() * batch_size
+            epoch_entry_count += batch_size
+            epoch_batch_count += 1
+
+            del predictions, targets, train_loss
+
+        train_loss_value = epoch_loss_sum / max(1, epoch_entry_count)
+        val_loss_value = evaluate_mse_loss(
+            model,
+            input_tensor,
+            adjacency_tensor,
+            val_indices,
+            val_values,
+            target_scale,
+            args.history_window,
+            device,
+        )
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
         print(
-            "Epoch [%d/%d] loss: %.6f val_loss: %.6f"
-            % (epoch + 1, args.epochs, train_loss_value, val_loss_value)
+            "Epoch [%d/%d] lr: %.6g batches: %d loss: %.6f val_loss: %.6f"
+            % (
+                epoch + 1,
+                args.epochs,
+                current_lr,
+                epoch_batch_count,
+                train_loss_value,
+                val_loss_value,
+            )
         )
 
         if val_loss_value < best_val:
@@ -380,6 +537,9 @@ def main():
             "lr": args.lr,
             "weight_decay": args.weight_decay,
             "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "history_window": args.history_window,
+            "warmup_epochs": args.warmup_epochs,
             "patience": args.patience,
             "target_normalization": args.target_normalization,
             "target_scale": target_scale,
@@ -388,9 +548,33 @@ def main():
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },
-        "train": evaluate_satformer(model, input_tensor, adjacency_tensor, train_indices, train_values, target_scale),
-        "val": evaluate_satformer(model, input_tensor, adjacency_tensor, val_indices, val_values, target_scale),
-        "test": evaluate_satformer(model, input_tensor, adjacency_tensor, test_indices, test_values, target_scale),
+        "train": evaluate_satformer(
+            model,
+            input_tensor,
+            adjacency_tensor,
+            train_indices,
+            train_values,
+            target_scale,
+            args.history_window,
+        ),
+        "val": evaluate_satformer(
+            model,
+            input_tensor,
+            adjacency_tensor,
+            val_indices,
+            val_values,
+            target_scale,
+            args.history_window,
+        ),
+        "test": evaluate_satformer(
+            model,
+            input_tensor,
+            adjacency_tensor,
+            test_indices,
+            test_values,
+            target_scale,
+            args.history_window,
+        ),
     }
 
     pprint(results)
