@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+CostCO/CoSTCo/__pycache__/
+CostCO/CoSTCo/results/
+CostCO/CoSTCo/splits/
+Satfomer/__pycache__/
+Satfomer/results/
+Satfomer/splits/
