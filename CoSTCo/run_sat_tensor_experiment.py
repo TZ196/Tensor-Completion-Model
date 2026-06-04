@@ -100,7 +100,7 @@ def parse_args():
     parser.add_argument("--rank", type=int, default=20)
     parser.add_argument("--nc", type=int, default=None)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--cpu-only", action="store_true")
