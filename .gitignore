@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+CostCO_git_backup/
 CostCO/CoSTCo/__pycache__/
 CostCO/CoSTCo/results/
 CostCO/CoSTCo/splits/
