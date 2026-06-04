@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class GraphConvolution(nn.Module):
@@ -189,8 +190,10 @@ class SatFormer(nn.Module):
         center_window=16,
         heads=8,
         dropout=0.0,
+        gradient_checkpointing=True,
     ):
         super().__init__()
+        self.gradient_checkpointing = gradient_checkpointing
         self.input_projection = nn.Linear(num_nodes, feature_dim)
         self.encoder = nn.ModuleList(
             [
@@ -227,22 +230,32 @@ class SatFormer(nn.Module):
             nn.ReLU(),
         )
 
+    def _run_module(self, module, h, adjacency):
+        if self.gradient_checkpointing and self.training:
+            return checkpoint(module, h, adjacency, use_reentrant=False)
+        return module(h, adjacency)
+
+    def _run_transfer(self, h):
+        if self.gradient_checkpointing and self.training:
+            return checkpoint(self.transfer, h, use_reentrant=False)
+        return self.transfer(h)
+
     def forward(self, x, adjacency_matrices):
         time_outputs = []
         for time_step in range(x.size(-1)):
             h = self.input_projection(x[:, :, time_step])
             adjacency = adjacency_matrices[:, :, time_step]
             for module in self.encoder:
-                h = module(h, adjacency)
+                h = self._run_module(module, h, adjacency)
             time_outputs.append(h)
 
-        h = self.transfer(torch.stack(time_outputs, dim=0))
+        h = self._run_transfer(torch.stack(time_outputs, dim=0))
 
         decoded = []
         for time_step in range(h.size(0)):
             step_h = h[time_step]
             adjacency = adjacency_matrices[:, :, time_step]
             for module in self.decoder:
-                step_h = module(step_h, adjacency)
+                step_h = self._run_module(module, step_h, adjacency)
             decoded.append(self.output_projection(step_h).unsqueeze(-1))
         return torch.cat(decoded, dim=-1)

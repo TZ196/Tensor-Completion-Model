@@ -122,6 +122,7 @@ def parse_args():
     parser.add_argument("--center-window", type=int, default=16)
     parser.add_argument("--heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--no-gradient-checkpointing", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--epochs", type=int, default=200)
@@ -290,6 +291,7 @@ def main():
         center_window=args.center_window,
         heads=args.heads,
         dropout=args.dropout,
+        gradient_checkpointing=not args.no_gradient_checkpointing,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = nn.MSELoss()
@@ -309,6 +311,7 @@ def main():
     print("Metrics path:", args.metrics_path)
     print("Target normalization:", args.target_normalization)
     print("Target scale:", target_scale)
+    print("Gradient checkpointing:", not args.no_gradient_checkpointing)
 
     best_val = float("inf")
     best_state = None
@@ -321,20 +324,28 @@ def main():
         train_loss = criterion(train_pred, train_targets)
         train_loss.backward()
         optimizer.step()
+        train_loss_value = train_loss.item()
+        del output, train_pred, train_loss
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
         model.eval()
         with torch.no_grad():
             output = model(input_tensor, adjacency_tensor)
             val_pred = gather_entries(output, val_indices)
             val_loss = criterion(val_pred, val_targets)
+            val_loss_value = val_loss.item()
+        del output, val_pred, val_loss
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
         print(
             "Epoch [%d/%d] loss: %.6f val_loss: %.6f"
-            % (epoch + 1, args.epochs, train_loss.item(), val_loss.item())
+            % (epoch + 1, args.epochs, train_loss_value, val_loss_value)
         )
 
-        if val_loss.item() < best_val:
-            best_val = val_loss.item()
+        if val_loss_value < best_val:
+            best_val = val_loss_value
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             stale_epochs = 0
         else:
@@ -365,6 +376,7 @@ def main():
             "center_window": args.center_window,
             "heads": args.heads,
             "dropout": args.dropout,
+            "gradient_checkpointing": not args.no_gradient_checkpointing,
             "lr": args.lr,
             "weight_decay": args.weight_decay,
             "epochs": args.epochs,

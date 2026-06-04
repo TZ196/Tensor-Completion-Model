@@ -108,6 +108,13 @@ python run_sat_tensor_experiment.py \
   --seed 3
 ```
 
+Gradient checkpointing is enabled by default to keep the 10-layer
+encoder/decoder model inside GPU memory. To disable it for debugging:
+
+```bash
+python run_sat_tensor_experiment.py --no-gradient-checkpointing
+```
+
 Different sampling rates:
 
 ```bash
