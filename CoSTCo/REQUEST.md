@@ -12,7 +12,9 @@ The dataset is a dense 3-D tensor with shape:
 
 The experiment follows a transductive tensor completion split:
 
-- All finite entries from the full `N x N x T` tensor are considered.
+- All non-zero finite entries from the full `N x N x T` tensor are considered.
+- Original zero values are excluded from train/validation/test splits.
+- `NaN`, `+Inf`, and `-Inf` values are also excluded.
 - A random subset is sampled as observed training entries.
 - Validation and test entries are sampled from the remaining unobserved entries.
 - All time slices may appear in the training set, so time embeddings are trained

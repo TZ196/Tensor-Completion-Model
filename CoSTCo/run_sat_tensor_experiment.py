@@ -22,11 +22,19 @@ def load_tensor(path):
     return tensor.astype("float32")
 
 
-def finite_entries(tensor):
-    mask = np.isfinite(tensor)
+def nonzero_finite_entries(tensor):
+    finite_mask = np.isfinite(tensor)
+    mask = finite_mask & (tensor != 0)
     indices = np.argwhere(mask).astype("int32")
     values = tensor[mask].astype("float32")
-    return indices, values
+    stats = {
+        "total_entries": int(tensor.size),
+        "finite_entries": int(np.sum(finite_mask)),
+        "nonzero_finite_entries": int(np.sum(mask)),
+        "zero_finite_entries": int(np.sum(finite_mask & (tensor == 0))),
+        "nonfinite_entries": int(tensor.size - np.sum(finite_mask)),
+    }
+    return indices, values, stats
 
 
 def create_random_completion_split(tensor_path, split_path, observed_ratio,
@@ -37,7 +45,9 @@ def create_random_completion_split(tensor_path, split_path, observed_ratio,
     if not 0.0 < val_ratio < 1.0:
         raise ValueError("--val-ratio must be between 0 and 1")
 
-    indices, values = finite_entries(tensor)
+    indices, values, data_stats = nonzero_finite_entries(tensor)
+    if indices.shape[0] < 3:
+        raise ValueError("Need at least 3 non-zero finite entries to split")
     rng = np.random.RandomState(seed)
     order = rng.permutation(indices.shape[0])
 
@@ -75,6 +85,17 @@ def create_random_completion_split(tensor_path, split_path, observed_ratio,
         missing_rate=np.array(1.0 - observed_ratio).astype("float32"),
         val_ratio=np.array(val_ratio).astype("float32"),
         seed=np.array(seed).astype("int32"),
+        total_entries=np.array(data_stats["total_entries"]).astype("int64"),
+        finite_entries=np.array(data_stats["finite_entries"]).astype("int64"),
+        nonzero_finite_entries=np.array(
+            data_stats["nonzero_finite_entries"]
+        ).astype("int64"),
+        zero_finite_entries=np.array(
+            data_stats["zero_finite_entries"]
+        ).astype("int64"),
+        nonfinite_entries=np.array(
+            data_stats["nonfinite_entries"]
+        ).astype("int64"),
     )
 
     return (
@@ -85,6 +106,7 @@ def create_random_completion_split(tensor_path, split_path, observed_ratio,
         val_values,
         test_indices,
         test_values,
+        data_stats,
     )
 
 
@@ -164,6 +186,7 @@ def main():
         val_values,
         test_indices,
         test_values,
+        data_stats,
     ) = (
         create_random_completion_split(
             args.tensor_path,
@@ -176,6 +199,11 @@ def main():
 
     print("Tensor shape:", shape.tolist())
     print("Split mode: random transductive completion")
+    print("Total entries:", data_stats["total_entries"])
+    print("Finite entries:", data_stats["finite_entries"])
+    print("Non-zero finite entries:", data_stats["nonzero_finite_entries"])
+    print("Excluded zero finite entries:", data_stats["zero_finite_entries"])
+    print("Excluded non-finite entries:", data_stats["nonfinite_entries"])
     print("Observed ratio:", observed_ratio)
     print("Missing rate:", 1.0 - observed_ratio)
     print("Validation ratio within unobserved entries:", args.val_ratio)
@@ -212,6 +240,12 @@ def main():
         "config": {
             "tensor_path": args.tensor_path,
             "split_mode": "random_transductive_completion",
+            "sample_filter": "finite_and_nonzero",
+            "total_entries": data_stats["total_entries"],
+            "finite_entries": data_stats["finite_entries"],
+            "nonzero_finite_entries": data_stats["nonzero_finite_entries"],
+            "zero_finite_entries_excluded": data_stats["zero_finite_entries"],
+            "nonfinite_entries_excluded": data_stats["nonfinite_entries"],
             "observed_ratio": observed_ratio,
             "missing_rate": 1.0 - observed_ratio,
             "val_ratio_within_unobserved": args.val_ratio,
