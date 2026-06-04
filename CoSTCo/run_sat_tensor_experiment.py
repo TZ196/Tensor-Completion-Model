@@ -124,21 +124,39 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument(
+        "--target-normalization",
+        choices=["max", "none"],
+        default="max",
+    )
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument("--metrics-path", default=None)
     return parser.parse_args()
 
 
-def default_output_path(output_dir, observed_ratio, val_ratio, seed, rank, nc):
-    name = "random_observed%d_val%d_seed%d_rank%d_nc%d.json" % (
+def default_output_path(output_dir, observed_ratio, val_ratio, seed, rank, nc,
+                        target_normalization):
+    name = "random_observed%d_val%d_seed%d_rank%d_nc%d_norm_%s.json" % (
         int(round(observed_ratio * 100)),
         int(round(val_ratio * 100)),
         seed,
         rank,
         nc,
+        target_normalization,
     )
     return os.path.join(output_dir, name)
+
+
+def get_target_scale(values, target_normalization):
+    if target_normalization == "none":
+        return 1.0
+    if target_normalization == "max":
+        scale = float(np.max(values))
+        if scale <= 0.0:
+            raise ValueError("Cannot use max normalization with non-positive max")
+        return scale
+    raise ValueError("Unsupported target normalization: %s" % target_normalization)
 
 
 def main():
@@ -174,6 +192,7 @@ def main():
             args.seed,
             args.rank,
             nc,
+            args.target_normalization,
         )
 
     configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
@@ -215,17 +234,24 @@ def main():
     print("Split path:", args.split_path)
     print("Metrics path:", args.metrics_path)
 
+    target_scale = get_target_scale(train_values, args.target_normalization)
+    train_targets = train_values / target_scale
+    val_targets = val_values / target_scale
+    print("Target normalization:", args.target_normalization)
+    print("Target scale:", target_scale)
+    print("Metrics scale: original target values")
+
     model = create_costco(shape, rank=args.rank, nc=nc)
     compile_costco(model, lr=args.lr)
     model.fit(
         x=transform_indices(train_indices),
-        y=train_values,
+        y=train_targets,
         verbose=1,
         epochs=args.epochs,
         batch_size=args.batch_size,
         validation_data=(
             transform_indices(val_indices),
-            val_values,
+            val_targets,
         ),
         callbacks=[
             k.callbacks.EarlyStopping(
@@ -259,6 +285,9 @@ def main():
             "lr": args.lr,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
+            "target_normalization": args.target_normalization,
+            "target_scale": target_scale,
+            "metrics_scale": "original",
             "seed": args.seed,
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
@@ -267,16 +296,19 @@ def main():
             model,
             train_indices,
             train_values,
+            target_scale=target_scale,
         ),
         "val": evaluate_costco(
             model,
             val_indices,
             val_values,
+            target_scale=target_scale,
         ),
         "test": evaluate_costco(
             model,
             test_indices,
             test_values,
+            target_scale=target_scale,
         ),
     }
 

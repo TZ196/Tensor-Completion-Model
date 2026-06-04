@@ -53,6 +53,22 @@ NMAE = sum(abs(y_true - y_pred)) / sum(abs(y_true))
 NRMSE = sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))
 ```
 
+Training targets are normalized by default using only the maximum value from
+the training split:
+
+```text
+target_scale = max(train_values)
+y_train_model = y_train_original / target_scale
+```
+
+Predictions are multiplied by `target_scale` before computing metrics, so all
+reported MAE/RMSE/NMAE/NRMSE values are on the original target scale. To disable
+target normalization:
+
+```bash
+python run_sat_tensor_experiment.py --target-normalization none
+```
+
 ## Required Environment
 
 Recommended environment:
@@ -99,6 +115,7 @@ python run_sat_tensor_experiment.py \
   --epochs 50 \
   --batch-size 256 \
   --lr 1e-4 \
+  --target-normalization max \
   --seed 3
 ```
 
@@ -108,7 +125,7 @@ The script writes:
 
 ```text
 splits/random_observed10_val10_seed_3.npz
-results/random_observed10_val10_seed3_rank20_nc20.json
+results/random_observed10_val10_seed3_rank20_nc20_norm_max.json
 ```
 
 The result JSON contains train, validation, and test metrics. The final test

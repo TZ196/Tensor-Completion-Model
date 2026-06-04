@@ -91,12 +91,14 @@ def compile_costco(model, lr=1e-4):
     return model
 
 
-def evaluate_costco(model, indices, values, batch_size=1024, verbose=1):
+def evaluate_costco(model, indices, values, batch_size=1024, verbose=1,
+                    target_scale=1.0):
     pred = model.predict(
         transform_indices(indices),
         batch_size=batch_size,
         verbose=verbose
     ).flatten()
+    pred = pred * target_scale
     pred = np.maximum(pred, 0.0)
     metrics = {
         "rmse": float(rmse(values, pred)),
