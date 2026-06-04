@@ -17,11 +17,16 @@ def load_tensor(path):
     return tensor.astype("float32")
 
 
-def load_npz_array(path):
+def load_npz_array(path, preferred_key="sat_connectivity"):
     data = np.load(path)
-    if len(data.files) != 1:
-        raise ValueError("%s contains multiple arrays: %s" % (path, data.files))
-    return data[data.files[0]].astype("float32")
+    if preferred_key in data.files:
+        return data[preferred_key].astype("float32")
+    if len(data.files) == 1:
+        return data[data.files[0]].astype("float32")
+    raise ValueError(
+        "%s contains multiple arrays %s, but key %r was not found"
+        % (path, data.files, preferred_key)
+    )
 
 
 def nonzero_finite_entries(tensor):
