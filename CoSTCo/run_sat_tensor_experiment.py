@@ -104,8 +104,19 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--cpu-only", action="store_true")
-    parser.add_argument("--metrics-path", default="results_sat_costco.json")
+    parser.add_argument("--metrics-path", default=None)
     return parser.parse_args()
+
+
+def default_output_path(output_dir, observed_ratio, val_ratio, seed, rank, nc):
+    name = "random_observed%d_val%d_seed%d_rank%d_nc%d.json" % (
+        int(round(observed_ratio * 100)),
+        int(round(val_ratio * 100)),
+        seed,
+        rank,
+        nc,
+    )
+    return os.path.join(output_dir, name)
 
 
 def main():
@@ -126,6 +137,21 @@ def main():
                 int(round(args.val_ratio * 100)),
                 args.seed,
             )
+        )
+
+    if args.nc is None:
+        nc = args.rank
+    else:
+        nc = args.nc
+
+    if args.metrics_path is None:
+        args.metrics_path = default_output_path(
+            "results",
+            observed_ratio,
+            args.val_ratio,
+            args.seed,
+            args.rank,
+            nc,
         )
 
     configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
@@ -159,8 +185,9 @@ def main():
     print("NMAE denominator: sum(abs(true_values))")
     print("NRMSE denominator: sqrt(sum(square(error)) / sum(square(true_values)))")
     print("Split path:", args.split_path)
+    print("Metrics path:", args.metrics_path)
 
-    model = create_costco(shape, rank=args.rank, nc=args.nc)
+    model = create_costco(shape, rank=args.rank, nc=nc)
     compile_costco(model, lr=args.lr)
     model.fit(
         x=transform_indices(train_indices),
@@ -192,8 +219,9 @@ def main():
             "val_entries": int(val_indices.shape[0]),
             "test_entries": int(test_indices.shape[0]),
             "split_path": args.split_path,
+            "metrics_path": args.metrics_path,
             "rank": args.rank,
-            "nc": args.nc if args.nc is not None else args.rank,
+            "nc": nc,
             "lr": args.lr,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
@@ -219,6 +247,9 @@ def main():
     }
 
     pprint(results)
+    metrics_dir = os.path.dirname(args.metrics_path)
+    if metrics_dir and not os.path.exists(metrics_dir):
+        os.makedirs(metrics_dir)
     with open(args.metrics_path, "w") as f:
         json.dump(results, f, indent=2, sort_keys=True)
     print("Saved metrics to:", args.metrics_path)

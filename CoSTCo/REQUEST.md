@@ -106,8 +106,18 @@ The script writes:
 
 ```text
 splits/random_observed10_val10_seed_3.npz
-results_sat_costco.json
+results/random_observed10_val10_seed3_rank20_nc20.json
 ```
 
-`results_sat_costco.json` contains train, validation, and test metrics. The
-final test NMAE/NRMSE should be read from `test`.
+The result JSON contains train, validation, and test metrics. The final test
+NMAE/NRMSE should be read from `test`.
+
+Different observed/missing rates are saved to different result files by
+default. For example:
+
+```bash
+python run_sat_tensor_experiment.py --missing-rate 0.9
+python run_sat_tensor_experiment.py --missing-rate 0.8
+```
+
+will produce separate files in `results/`.
