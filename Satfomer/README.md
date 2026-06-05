@@ -29,13 +29,21 @@ sparse observed tensor
 
 Each Spatio-Temporal Module contains:
 
-- two-layer normalized GCN over the dynamic ISL topology;
+- two-layer normalized OD-GCN over both source and destination dimensions;
 - SatFormer block with `LN -> ASSIT -> LN -> MLP`;
 - residual connections.
 
-ASSIT uses local regions, a center-window mask, multi-head attention, and
-adaptive sparse gating. The Transfer Module uses temporal self-attention with
-learnable history/current weights.
+The OD-GCN keeps a hidden representation for every `(source, destination)`
+satellite pair and propagates topology context along both matrix axes:
+
+```text
+source axis:      A_norm @ H
+destination axis: H @ A_norm^T
+```
+
+ASSIT uses multi-channel local OD regions, a center-window mask, multi-head
+attention, and adaptive sparse gating. The Transfer Module uses temporal
+self-attention with learnable history/current weights for every OD pair.
 
 The distance/time-delay weight matrix `W` is not used here because
 `sat_path_bytes_tensor.npy` already stores the real inter-satellite path traffic.
