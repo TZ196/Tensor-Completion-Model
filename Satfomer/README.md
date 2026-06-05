@@ -41,10 +41,10 @@ ASSIT 使用局部 OD region、多头注意力、中心窗口 mask 和自适应�
 默认配置用于正式小规模实验：
 
 ```text
-feature_dim = 64
-gcn_hidden_dim = 64
+feature_dim = 96
+gcn_hidden_dim = 96
 num_modules = 4
-history_window = 6
+history_window = 8
 
 encoder: 4 个 SpatioTemporalModule
 decoder: 4 个 SpatioTemporalModule
@@ -125,13 +125,14 @@ python run_sat_tensor_experiment.py
 python run_sat_tensor_experiment.py \
   --missing-rate 0.90 \
   --epochs 200 \
-  --feature-dim 64 \
-  --gcn-hidden-dim 64 \
+  --feature-dim 96 \
+  --gcn-hidden-dim 96 \
   --num-modules 4 \
   --heads 8 \
-  --history-window 6 \
+  --history-window 8 \
   --batch-size 512 \
   --lr 0.001 \
+  --val-every 5 \
   --target-normalization max \
   --seed 3
 ```
@@ -169,14 +170,15 @@ nohup python -u run_sat_tensor_experiment.py \
   --missing-rate 0.90 \
   --epochs 200 \
   --log-every 1 \
+  --val-every 5 \
   --eval-splits test \
-  > logs/satformer_mr90_seed3.log 2>&1 &
+  > logs/satformer_mr90_dim96_layers4_hist8_val5_seed3.log 2>&1 &
 ```
 
 查看日志：
 
 ```bash
-tail -f logs/satformer_mr90_seed3.log
+tail -f logs/satformer_mr90_dim96_layers4_hist8_val5_seed3.log
 ```
 
 ## 输出
@@ -185,7 +187,14 @@ tail -f logs/satformer_mr90_seed3.log
 
 ```text
 splits/random_observed10_val10_seed_3.npz
-results/random_observed10_val10_seed3_dim64_layers4_batch512_hist6_norm_max.json
+results/random_observed10_val10_seed3_dim96_layers4_batch512_hist8_norm_max.json
 ```
+python -u run_sat_tensor_experiment.py \
+  --missing-rate 0.90 \
+  --epochs 200 \
+  --val-every 5 \
+  --log-every 1 \
+  --eval-splits test \
+  --no-gradient-checkpointing
 
 最终从 JSON 的 `test` 字段读取 NMAE 和 NRMSE。

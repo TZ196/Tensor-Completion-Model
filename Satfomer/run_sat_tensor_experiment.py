@@ -116,8 +116,8 @@ def parse_args():
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--missing-rate", type=float, default=0.9)
     parser.add_argument("--observed-ratio", type=float, default=None)
-    parser.add_argument("--feature-dim", type=int, default=64)
-    parser.add_argument("--gcn-hidden-dim", type=int, default=64)
+    parser.add_argument("--feature-dim", type=int, default=96)
+    parser.add_argument("--gcn-hidden-dim", type=int, default=96)
     parser.add_argument("--num-modules", type=int, default=4)
     parser.add_argument("--region-size", type=int, default=16)
     parser.add_argument("--center-window", type=int, default=16)
@@ -128,9 +128,15 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--history-window", type=int, default=6)
+    parser.add_argument("--history-window", type=int, default=8)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--log-every", type=int, default=50)
+    parser.add_argument(
+        "--val-every",
+        type=int,
+        default=1,
+        help="Run full validation loss every N epochs. Use 0 to disable per-epoch validation.",
+    )
     parser.add_argument("--eval-log-every", type=int, default=10)
     parser.add_argument("--max-train-steps-per-epoch", type=int, default=0)
     parser.add_argument("--patience", type=int, default=10)
@@ -295,6 +301,13 @@ def set_warmup_lr(optimizer, base_lr, epoch, warmup_epochs):
     for group in optimizer.param_groups:
         group["lr"] = lr
     return lr
+
+
+def should_run_validation(epoch, total_epochs, val_every):
+    if val_every <= 0:
+        return False
+    epoch_number = epoch + 1
+    return epoch_number % val_every == 0 or epoch_number == total_epochs
 
 
 def evaluate_mse_loss(
@@ -539,6 +552,10 @@ def main():
     print("History window:", "full" if args.history_window <= 0 else args.history_window)
     print("Warmup epochs:", args.warmup_epochs)
     print("Log every steps:", args.log_every)
+    print(
+        "Validation every epochs:",
+        "disabled" if args.val_every <= 0 else args.val_every,
+    )
     print("Final eval splits:", args.eval_splits)
     print("Final eval log every time steps:", args.eval_log_every)
     print(
@@ -632,41 +649,54 @@ def main():
                 break
 
         train_loss_value = epoch_loss_sum / max(1, epoch_entry_count)
-        val_loss_value = evaluate_mse_loss(
-            model,
-            input_tensor,
-            adjacency_tensor,
-            val_indices,
-            val_values,
-            target_scale,
-            args.history_window,
-            device,
-        )
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-
-        print(
-            "Epoch [%d/%d] lr: %.6g steps: %d loss: %.6f val_loss: %.6f"
-            % (
-                epoch + 1,
-                args.epochs,
-                current_lr,
-                epoch_step_count,
-                train_loss_value,
-                val_loss_value,
-            )
-        )
         completed_epochs = epoch + 1
 
-        if val_loss_value < best_val:
-            best_val = val_loss_value
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            stale_epochs = 0
+        if should_run_validation(epoch, args.epochs, args.val_every):
+            val_loss_value = evaluate_mse_loss(
+                model,
+                input_tensor,
+                adjacency_tensor,
+                val_indices,
+                val_values,
+                target_scale,
+                args.history_window,
+                device,
+            )
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+            print(
+                "Epoch [%d/%d] lr: %.6g steps: %d loss: %.6f val_loss: %.6f"
+                % (
+                    epoch + 1,
+                    args.epochs,
+                    current_lr,
+                    epoch_step_count,
+                    train_loss_value,
+                    val_loss_value,
+                )
+            )
+
+            if val_loss_value < best_val:
+                best_val = val_loss_value
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                stale_epochs = 0
+            else:
+                stale_epochs += 1
+                if stale_epochs >= args.patience:
+                    print("Early stopping at epoch %d" % (epoch + 1))
+                    break
         else:
-            stale_epochs += 1
-            if stale_epochs >= args.patience:
-                print("Early stopping at epoch %d" % (epoch + 1))
-                break
+            print(
+                "Epoch [%d/%d] lr: %.6g steps: %d loss: %.6f val_loss: skipped"
+                % (
+                    epoch + 1,
+                    args.epochs,
+                    current_lr,
+                    epoch_step_count,
+                    train_loss_value,
+                )
+            )
 
     training_elapsed_seconds = time.perf_counter() - train_start_time
     print(
@@ -710,6 +740,7 @@ def main():
             "history_window": args.history_window,
             "warmup_epochs": args.warmup_epochs,
             "log_every": args.log_every,
+            "val_every": args.val_every,
             "eval_log_every": args.eval_log_every,
             "eval_splits": args.eval_splits,
             "max_train_steps_per_epoch": args.max_train_steps_per_epoch,
