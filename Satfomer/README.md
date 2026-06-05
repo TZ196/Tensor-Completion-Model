@@ -38,6 +38,27 @@ ASSIT 使用局部 OD region、多头注意力、中心窗口 mask 和自适应�
 
 距离/时延权重矩阵 `W` 不使用，因为 `sat_path_bytes_mb_tensor.npy` 已经是真实星间路径流量矩阵，不需要再融合额外权重矩阵。
 
+默认配置用于正式小规模实验：
+
+```text
+feature_dim = 64
+gcn_hidden_dim = 64
+num_modules = 4
+history_window = 6
+
+encoder: 4 个 SpatioTemporalModule
+decoder: 4 个 SpatioTemporalModule
+
+每个 module:
+  OD-GCN
+  SatFormerBlock
+    - ASSIT attention
+    - MLP
+
+TransferModule:
+  时间维 attention
+```
+
 ## 训练方式
 
 论文的整体任务可以理解为：
@@ -57,7 +78,7 @@ ASSIT 使用局部 OD region、多头注意力、中心窗口 mask 和自适应�
 loss: 只在该 target_time 的训练观测项上计算
 ```
 
-每个 epoch 会遍历训练集中出现的时间步；每个 optimizer step 预测一个目标时间步的完整 `N x N` 矩阵，然后在该时间步的训练 entries 上计算 MSE loss。默认 `history_window=8`；设置 `--history-window 0` 表示使用从时间 0 到目标时间的完整历史窗口。
+每个 epoch 会遍历训练集中出现的时间步；每个 optimizer step 预测一个目标时间步的完整 `N x N` 矩阵，然后在该时间步的训练 entries 上计算 MSE loss。默认 `history_window=6`；设置 `--history-window 8` 可使用更长历史窗口，设置 `--history-window 0` 表示使用从时间 0 到目标时间的完整历史窗口。
 
 ## 数据划分和指标
 
@@ -104,11 +125,11 @@ python run_sat_tensor_experiment.py
 python run_sat_tensor_experiment.py \
   --missing-rate 0.90 \
   --epochs 200 \
-  --feature-dim 128 \
-  --gcn-hidden-dim 128 \
-  --num-modules 10 \
+  --feature-dim 64 \
+  --gcn-hidden-dim 64 \
+  --num-modules 4 \
   --heads 8 \
-  --history-window 8 \
+  --history-window 6 \
   --batch-size 512 \
   --lr 0.001 \
   --target-normalization max \
@@ -164,7 +185,7 @@ tail -f logs/satformer_mr90_seed3.log
 
 ```text
 splits/random_observed10_val10_seed_3.npz
-results/random_observed10_val10_seed3_dim128_layers10_batch512_hist8_norm_max.json
+results/random_observed10_val10_seed3_dim64_layers4_batch512_hist6_norm_max.json
 ```
 
 最终从 JSON 的 `test` 字段读取 NMAE 和 NRMSE。

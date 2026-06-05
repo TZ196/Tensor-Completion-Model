@@ -37,6 +37,8 @@ README.md
 ```bash
 pip install -r requirements.txt
 python run_sat_tensor_experiment.py
+conda activate TZ-Satformer
+conda activate TZ-costco
 ```
 
 不同观测率实验：
