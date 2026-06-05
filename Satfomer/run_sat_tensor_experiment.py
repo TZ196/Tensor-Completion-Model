@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import time
 from pprint import pprint
 
 import numpy as np
@@ -129,6 +130,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--history-window", type=int, default=8)
     parser.add_argument("--warmup-epochs", type=int, default=5)
+    parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument(
         "--target-normalization",
@@ -182,6 +184,18 @@ def configure_torch(cpu_only=False, seed=0):
         torch.cuda.manual_seed_all(seed)
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+def format_duration(seconds):
+    seconds = float(seconds)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    if hours > 0:
+        return "%dh %02dm %05.2fs" % (hours, minutes, secs)
+    if minutes > 0:
+        return "%dm %05.2fs" % (minutes, secs)
+    return "%.2fs" % secs
 
 
 def build_observed_tensor(shape, indices, values, target_scale, device):
@@ -432,12 +446,15 @@ def main():
     print("Batch size:", args.batch_size)
     print("History window:", "full" if args.history_window <= 0 else args.history_window)
     print("Warmup epochs:", args.warmup_epochs)
+    print("Log every batches:", args.log_every)
     print("Gradient checkpointing:", not args.no_gradient_checkpointing)
 
     best_val = float("inf")
     best_state = None
     stale_epochs = 0
     rng = np.random.RandomState(args.seed)
+    completed_epochs = 0
+    train_start_time = time.perf_counter()
     for epoch in range(args.epochs):
         current_lr = set_warmup_lr(optimizer, args.lr, epoch, args.warmup_epochs)
         model.train()
@@ -474,6 +491,19 @@ def main():
             epoch_batch_count += 1
 
             del predictions, targets, train_loss
+            if args.log_every > 0 and epoch_batch_count % args.log_every == 0:
+                running_loss = epoch_loss_sum / max(1, epoch_entry_count)
+                print(
+                    "Epoch [%d/%d] batch %d entries %d running_loss: %.6f"
+                    % (
+                        epoch + 1,
+                        args.epochs,
+                        epoch_batch_count,
+                        epoch_entry_count,
+                        running_loss,
+                    ),
+                    flush=True,
+                )
 
         train_loss_value = epoch_loss_sum / max(1, epoch_entry_count)
         val_loss_value = evaluate_mse_loss(
@@ -500,6 +530,7 @@ def main():
                 val_loss_value,
             )
         )
+        completed_epochs = epoch + 1
 
         if val_loss_value < best_val:
             best_val = val_loss_value
@@ -510,6 +541,17 @@ def main():
             if stale_epochs >= args.patience:
                 print("Early stopping at epoch %d" % (epoch + 1))
                 break
+
+    training_elapsed_seconds = time.perf_counter() - train_start_time
+    print(
+        "Training finished in %s (%.2f seconds) over %d epoch(s)"
+        % (
+            format_duration(training_elapsed_seconds),
+            training_elapsed_seconds,
+            completed_epochs,
+        ),
+        flush=True,
+    )
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -537,14 +579,18 @@ def main():
             "lr": args.lr,
             "weight_decay": args.weight_decay,
             "epochs": args.epochs,
+            "completed_epochs": completed_epochs,
             "batch_size": args.batch_size,
             "history_window": args.history_window,
             "warmup_epochs": args.warmup_epochs,
+            "log_every": args.log_every,
             "patience": args.patience,
             "target_normalization": args.target_normalization,
             "target_scale": target_scale,
             "metrics_scale": "original",
             "seed": args.seed,
+            "training_time_seconds": training_elapsed_seconds,
+            "training_time": format_duration(training_elapsed_seconds),
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },
