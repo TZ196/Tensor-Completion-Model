@@ -144,6 +144,8 @@ python run_sat_tensor_experiment.py \
   --missing-rate 0.90 \
   --epochs 1 \
   --max-train-steps-per-epoch 1 \
+  --eval-splits none \
+  --fill-check-entries 20 \
   --log-every 1
 ```
 
@@ -172,6 +174,7 @@ nohup python -u run_sat_tensor_experiment.py \
   --log-every 1 \
   --val-every 5 \
   --eval-splits test \
+  --fill-check-entries 20 \
   > logs/satformer_mr90_dim96_layers4_hist8_val5_seed3.log 2>&1 &
 ```
 

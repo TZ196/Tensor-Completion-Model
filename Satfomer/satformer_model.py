@@ -249,7 +249,6 @@ class SatFormer(nn.Module):
             nn.Linear(feature_dim, feature_dim),
             nn.ReLU(),
             nn.Linear(feature_dim, 1),
-            nn.ReLU(),
         )
 
     def _run_module(self, module, h, adjacency):

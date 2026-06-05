@@ -154,6 +154,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument("--metrics-path", default=None)
+    parser.add_argument("--fill-check-entries", type=int, default=20)
     return parser.parse_args()
 
 
@@ -218,6 +219,16 @@ def build_observed_tensor(shape, indices, values, target_scale, device):
     vals = torch.as_tensor(values / target_scale, dtype=torch.float32, device=device)
     observed[idx[:, 0], idx[:, 1], idx[:, 2]] = vals
     return observed
+
+
+def initialize_output_bias(model, train_values, target_scale):
+    output_layer = model.output_projection[-1]
+    if not isinstance(output_layer, nn.Linear):
+        return None
+    normalized_mean = float(np.mean(train_values / target_scale))
+    with torch.no_grad():
+        output_layer.bias.fill_(normalized_mean)
+    return normalized_mean
 
 
 def gather_entries(tensor, indices):
@@ -446,6 +457,90 @@ def evaluate_satformer(
     return metrics
 
 
+def quick_fill_check(
+    model,
+    input_tensor,
+    adjacency_tensor,
+    test_indices,
+    test_values,
+    target_scale,
+    history_window,
+    num_entries,
+    seed,
+):
+    if num_entries <= 0:
+        return None
+    sample_size = min(int(num_entries), int(test_indices.shape[0]))
+    rng = np.random.RandomState(seed)
+    positions = rng.choice(test_indices.shape[0], size=sample_size, replace=False)
+    sample_indices = test_indices[positions]
+    sample_values = test_values[positions]
+
+    model.eval()
+    predictions = np.empty(sample_size, dtype="float32")
+    with torch.no_grad():
+        for time_step in np.unique(sample_indices[:, 2]):
+            time_positions = np.flatnonzero(sample_indices[:, 2] == time_step)
+            pred = predict_entries_for_time(
+                model,
+                input_tensor,
+                adjacency_tensor,
+                int(time_step),
+                sample_indices[time_positions],
+                history_window,
+            )
+            predictions[time_positions] = pred.detach().cpu().numpy().astype("float32")
+
+    raw_pred = predictions * target_scale
+    clipped_pred = np.maximum(raw_pred, 0.0)
+    stats = {
+        "sample_entries": int(sample_size),
+        "source": "test entries not observed during training",
+        "raw_pred_min": float(np.min(raw_pred)),
+        "raw_pred_max": float(np.max(raw_pred)),
+        "raw_pred_mean": float(np.mean(raw_pred)),
+        "clipped_pred_min": float(np.min(clipped_pred)),
+        "clipped_pred_max": float(np.max(clipped_pred)),
+        "clipped_pred_mean": float(np.mean(clipped_pred)),
+        "clipped_nonzero_entries": int(np.sum(clipped_pred > 0.0)),
+        "true_min": float(np.min(sample_values)),
+        "true_max": float(np.max(sample_values)),
+        "true_mean": float(np.mean(sample_values)),
+        "nmae": float(nmae(sample_values, clipped_pred)),
+        "nrmse": float(nrmse(sample_values, clipped_pred)),
+    }
+    print(
+        "Quick fill check on %d unobserved test entries: pred clipped min/mean/max %.6f/%.6f/%.6f, nonzero %d/%d, NMAE %.6f, NRMSE %.6f"
+        % (
+            sample_size,
+            stats["clipped_pred_min"],
+            stats["clipped_pred_mean"],
+            stats["clipped_pred_max"],
+            stats["clipped_nonzero_entries"],
+            sample_size,
+            stats["nmae"],
+            stats["nrmse"],
+        ),
+        flush=True,
+    )
+    preview_count = min(5, sample_size)
+    for i in range(preview_count):
+        print(
+            "Fill check sample %d index (%d, %d, %d) true %.6f pred %.6f raw %.6f"
+            % (
+                i + 1,
+                int(sample_indices[i, 0]),
+                int(sample_indices[i, 1]),
+                int(sample_indices[i, 2]),
+                float(sample_values[i]),
+                float(clipped_pred[i]),
+                float(raw_pred[i]),
+            ),
+            flush=True,
+        )
+    return stats
+
+
 def selected_eval_splits(eval_splits):
     if eval_splits == "none":
         return []
@@ -490,7 +585,6 @@ def main():
             args.history_window,
             args.target_normalization,
         )
-
     device = configure_torch(cpu_only=args.cpu_only, seed=args.seed)
     (
         shape,
@@ -528,6 +622,7 @@ def main():
         dropout=args.dropout,
         gradient_checkpointing=not args.no_gradient_checkpointing,
     ).to(device)
+    output_bias_init = initialize_output_bias(model, train_values, target_scale)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = nn.MSELoss()
 
@@ -544,8 +639,10 @@ def main():
     print("Device:", device)
     print("Split path:", args.split_path)
     print("Metrics path:", args.metrics_path)
+    print("Quick fill check entries:", args.fill_check_entries)
     print("Target normalization:", args.target_normalization)
     print("Target scale:", target_scale)
+    print("Output bias init:", output_bias_init)
     print("Batch size:", args.batch_size)
     print("Training objective: masked tensor window -> one target-time traffic matrix")
     print("Training update unit: one target time step per optimizer step")
@@ -606,6 +703,10 @@ def main():
                 time_step,
                 args.history_window,
             )
+            if should_log_step:
+                pred_min = float(torch.min(prediction_matrix).item() * target_scale)
+                pred_max = float(torch.max(prediction_matrix).item() * target_scale)
+                pred_mean = float(torch.mean(prediction_matrix).item() * target_scale)
             predictions = gather_matrix_entries(prediction_matrix, batch_indices)
             targets = torch.as_tensor(
                 batch_values / target_scale,
@@ -625,7 +726,7 @@ def main():
             if should_log_step:
                 running_loss = epoch_loss_sum / max(1, epoch_entry_count)
                 print(
-                    "Epoch [%d/%d] step %d/%d entries %d running_loss: %.6f step_time: %s"
+                    "Epoch [%d/%d] step %d/%d entries %d running_loss: %.6f pred[min/mean/max]: %.6f/%.6f/%.6f step_time: %s"
                     % (
                         epoch + 1,
                         args.epochs,
@@ -633,6 +734,9 @@ def main():
                         epoch_time_steps,
                         epoch_entry_count,
                         running_loss,
+                        pred_min,
+                        pred_mean,
+                        pred_max,
                         format_duration(time.perf_counter() - step_start_time),
                     ),
                     flush=True,
@@ -743,10 +847,12 @@ def main():
             "val_every": args.val_every,
             "eval_log_every": args.eval_log_every,
             "eval_splits": args.eval_splits,
+            "fill_check_entries": args.fill_check_entries,
             "max_train_steps_per_epoch": args.max_train_steps_per_epoch,
             "patience": args.patience,
             "target_normalization": args.target_normalization,
             "target_scale": target_scale,
+            "output_bias_init": output_bias_init,
             "metrics_scale": "original",
             "seed": args.seed,
             "training_time_seconds": training_elapsed_seconds,
@@ -773,6 +879,17 @@ def main():
             split_name=split_name,
             log_every=args.eval_log_every,
         )
+    results["fill_check"] = quick_fill_check(
+        model,
+        input_tensor,
+        adjacency_tensor,
+        test_indices,
+        test_values,
+        target_scale,
+        args.history_window,
+        args.fill_check_entries,
+        args.seed,
+    )
 
     pprint(results)
     metrics_dir = os.path.dirname(args.metrics_path)
