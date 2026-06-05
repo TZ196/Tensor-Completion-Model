@@ -131,8 +131,15 @@ def parse_args():
     parser.add_argument("--history-window", type=int, default=8)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--log-every", type=int, default=50)
+    parser.add_argument("--eval-log-every", type=int, default=10)
     parser.add_argument("--max-train-steps-per-epoch", type=int, default=0)
     parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument(
+        "--eval-splits",
+        choices=["none", "test", "val-test", "all"],
+        default="test",
+        help="Final metric splits to evaluate after training. Validation loss is still used every epoch.",
+    )
     parser.add_argument(
         "--target-normalization",
         choices=["max", "none"],
@@ -355,11 +362,21 @@ def evaluate_satformer(
     values,
     target_scale,
     history_window,
+    split_name="eval",
+    log_every=10,
 ):
     model.eval()
     predictions = np.empty(values.shape[0], dtype="float32")
+    time_steps = np.unique(indices[:, 2])
+    eval_start_time = time.perf_counter()
+    print(
+        "Final %s evaluation starting: %d entries across %d time step(s)"
+        % (split_name, values.shape[0], time_steps.shape[0]),
+        flush=True,
+    )
     with torch.no_grad():
-        for time_step in np.unique(indices[:, 2]):
+        for step_index, time_step in enumerate(time_steps, start=1):
+            step_start_time = time.perf_counter()
             positions = np.flatnonzero(indices[:, 2] == time_step)
             batch_indices = indices[positions]
             pred = predict_entries_for_time(
@@ -371,9 +388,27 @@ def evaluate_satformer(
                 history_window,
             )
             predictions[positions] = pred.detach().cpu().numpy().astype("float32")
+            should_log = log_every > 0 and (
+                step_index == 1
+                or step_index == time_steps.shape[0]
+                or step_index % log_every == 0
+            )
+            if should_log:
+                print(
+                    "Final %s evaluation step %d/%d target_time %d entries %d step_time: %s"
+                    % (
+                        split_name,
+                        step_index,
+                        time_steps.shape[0],
+                        int(time_step),
+                        positions.shape[0],
+                        format_duration(time.perf_counter() - step_start_time),
+                    ),
+                    flush=True,
+                )
     pred = predictions * target_scale
     pred = np.maximum(pred, 0.0)
-    return {
+    metrics = {
         "rmse": float(rmse(values, pred)),
         "mae": float(mae(values, pred)),
         "nmae": float(nmae(values, pred)),
@@ -385,6 +420,29 @@ def evaluate_satformer(
         "y_pred_max": float(np.max(pred)),
         "y_pred_mean": float(np.mean(pred)),
     }
+    print(
+        "Final %s evaluation finished in %s: NMAE %.6f, NRMSE %.6f"
+        % (
+            split_name,
+            format_duration(time.perf_counter() - eval_start_time),
+            metrics["nmae"],
+            metrics["nrmse"],
+        ),
+        flush=True,
+    )
+    return metrics
+
+
+def selected_eval_splits(eval_splits):
+    if eval_splits == "none":
+        return []
+    if eval_splits == "test":
+        return ["test"]
+    if eval_splits == "val-test":
+        return ["val", "test"]
+    if eval_splits == "all":
+        return ["train", "val", "test"]
+    raise ValueError("Unsupported --eval-splits value: %s" % eval_splits)
 
 
 def main():
@@ -476,10 +534,13 @@ def main():
     print("Target normalization:", args.target_normalization)
     print("Target scale:", target_scale)
     print("Batch size:", args.batch_size)
+    print("Training objective: masked tensor window -> one target-time traffic matrix")
     print("Training update unit: one target time step per optimizer step")
     print("History window:", "full" if args.history_window <= 0 else args.history_window)
     print("Warmup epochs:", args.warmup_epochs)
     print("Log every steps:", args.log_every)
+    print("Final eval splits:", args.eval_splits)
+    print("Final eval log every time steps:", args.eval_log_every)
     print(
         "Max train steps per epoch:",
         "all" if args.max_train_steps_per_epoch <= 0 else args.max_train_steps_per_epoch,
@@ -649,6 +710,8 @@ def main():
             "history_window": args.history_window,
             "warmup_epochs": args.warmup_epochs,
             "log_every": args.log_every,
+            "eval_log_every": args.eval_log_every,
+            "eval_splits": args.eval_splits,
             "max_train_steps_per_epoch": args.max_train_steps_per_epoch,
             "patience": args.patience,
             "target_normalization": args.target_normalization,
@@ -660,34 +723,25 @@ def main():
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },
-        "train": evaluate_satformer(
-            model,
-            input_tensor,
-            adjacency_tensor,
-            train_indices,
-            train_values,
-            target_scale,
-            args.history_window,
-        ),
-        "val": evaluate_satformer(
-            model,
-            input_tensor,
-            adjacency_tensor,
-            val_indices,
-            val_values,
-            target_scale,
-            args.history_window,
-        ),
-        "test": evaluate_satformer(
-            model,
-            input_tensor,
-            adjacency_tensor,
-            test_indices,
-            test_values,
-            target_scale,
-            args.history_window,
-        ),
     }
+    eval_data = {
+        "train": (train_indices, train_values),
+        "val": (val_indices, val_values),
+        "test": (test_indices, test_values),
+    }
+    for split_name in selected_eval_splits(args.eval_splits):
+        split_indices, split_values = eval_data[split_name]
+        results[split_name] = evaluate_satformer(
+            model,
+            input_tensor,
+            adjacency_tensor,
+            split_indices,
+            split_values,
+            target_scale,
+            args.history_window,
+            split_name=split_name,
+            log_every=args.eval_log_every,
+        )
 
     pprint(results)
     metrics_dir = os.path.dirname(args.metrics_path)

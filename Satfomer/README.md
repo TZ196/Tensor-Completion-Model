@@ -1,152 +1,121 @@
-# SatFormer Tensor Completion
+# SatFormer 张量补全
 
-This project runs SatFormer on the satellite inter-satellite path traffic tensor:
+本目录用于在卫星星间路径流量张量上运行 SatFormer。
 
 ```text
 sat_path_bytes_mb_tensor.npy: 120 x 120 x 60
+sat_connectivity_tensor_dynamic_60s_1000ms.npz: 120 x 120 x 60
 ```
 
-The dynamic ISL topology tensor is loaded from:
+拓扑张量中 `1` 表示对应时刻两颗卫星存在 ISL 邻接关系，`0` 表示不存在 ISL。`.npz` 默认读取键名为 `sat_connectivity` 的数组。
+
+## 模型结构
+
+实现保留 SatFormer 的主体结构：
 
 ```text
-sat_connectivity_tensor_dynamic_60s_1000ms.npz
-```
-
-The topology tensor has the same shape, `120 x 120 x 60`; value `1` means two
-satellites are adjacent at that time step, and `0` means no ISL.
-
-## Model
-
-The implementation follows the paper-level SatFormer structure:
-
-```text
-sparse observed tensor
+masked traffic tensor
 -> Encoder Spatio-Temporal Modules
 -> Transfer Module
 -> Decoder Spatio-Temporal Modules
--> completed tensor
+-> recovered traffic
 ```
 
-Each Spatio-Temporal Module contains:
+每个 Spatio-Temporal Module 包含：
 
-- two-layer normalized OD-GCN over both source and destination dimensions;
-- SatFormer block with `LN -> ASSIT -> LN -> MLP`;
-- residual connections.
+- 两层归一化 OD-GCN；
+- SatFormer block: `LayerNorm -> ASSIT -> LayerNorm -> MLP`；
+- 残差连接。
 
-The OD-GCN keeps a hidden representation for every `(source, destination)`
-satellite pair and propagates topology context along both matrix axes:
+当前 OD-GCN 使用 `[source, destination, channel]` 隐表示，同时沿源卫星维度和目的卫星维度传播拓扑信息：
 
 ```text
 source axis:      A_norm @ H
 destination axis: H @ A_norm^T
 ```
 
-ASSIT uses multi-channel local OD regions, a center-window mask, multi-head
-attention, and adaptive sparse gating. The Transfer Module uses temporal
-self-attention with learnable history/current weights for every OD pair.
+ASSIT 使用局部 OD region、多头注意力、中心窗口 mask 和自适应稀疏门控。Transfer Module 对每个 OD pair 的时间序列做 temporal attention。
 
-The distance/time-delay weight matrix `W` is not used here because
-`sat_path_bytes_mb_tensor.npy` already stores the real inter-satellite path traffic.
+距离/时延权重矩阵 `W` 不使用，因为 `sat_path_bytes_mb_tensor.npy` 已经是真实星间路径流量矩阵，不需要再融合额外权重矩阵。
 
-## Split And Metrics
+## 训练方式
 
-The experiment follows the same random transductive tensor completion protocol
-as the CoSTCo reference project:
+论文的整体任务可以理解为：
 
-- finite non-zero entries are eligible samples;
-- original zero values are excluded from train/validation/test splits;
-- a random observed subset is used as training entries;
-- validation and test entries are sampled from the remaining unobserved entries;
-- splits are saved under `splits/`;
-- metrics are saved under `results/`.
+```text
+输入: masked N x N x T 流量张量
+输出: recovered N x N x T 流量张量
+```
 
-Reported metrics include NMAE and NRMSE:
+但在当前 120 星、60 时间步、OD-aware 隐表示、ASSIT attention 和 10 层 encoder/decoder 设置下，整张 `120 x 120 x 60` full-batch 反向传播显存和时间开销过大。
+
+因此默认训练采用更合理的工程化复现方式：
+
+```text
+输入: masked history window [N, N, history_window]
+输出: target_time 的恢复矩阵 [N, N]
+loss: 只在该 target_time 的训练观测项上计算
+```
+
+每个 epoch 会遍历训练集中出现的时间步；每个 optimizer step 预测一个目标时间步的完整 `N x N` 矩阵，然后在该时间步的训练 entries 上计算 MSE loss。默认 `history_window=8`；设置 `--history-window 0` 表示使用从时间 0 到目标时间的完整历史窗口。
+
+## 数据划分和指标
+
+划分方式参考 CoSTCo 项目：
+
+- 只使用有限且非零的 entries 作为候选样本；
+- 原始零值不参与 train/validation/test；
+- observed subset 作为训练项；
+- validation/test 从未观测项中划分；
+- split 保存到 `splits/`；
+- 结果保存到 `results/`。
+
+最终评价指标使用原始流量尺度上的 NMAE 和 NRMSE：
 
 ```text
 NMAE  = sum(abs(y_true - y_pred)) / sum(abs(y_true))
 NRMSE = sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))
 ```
 
-Metrics are computed on the original traffic scale. Training targets are
-normalized by `max(train_values)` by default.
+训练目标默认使用 `max(train_values)` 归一化，所以训练日志里的 loss 是归一化尺度上的 MSE，不是 MB 原始尺度误差。
 
-Training uses the paper-style settings by default:
+## 环境
 
-- Adam optimizer;
-- learning rate `0.001`;
-- weight decay `1e-5`;
-- training updates are grouped by target time step to avoid repeated full-window
-  forward passes;
-- warmup for the first `5` epochs;
-- early stopping with patience `10`;
-- no 10-run averaging.
-
-The training loop is grouped by target time step. For one optimizer update, it
-builds the history window for one target time step, predicts that time-step
-traffic matrix once, and computes loss on all observed training entries from
-that target time step. It no longer performs one full `120 x 120 x 60`
-reconstruction backward pass per epoch, and it no longer repeats the same
-time-step forward pass for many entry batches. The temporal Transfer Module
-uses a history window; the default is `8` time steps. Use `--history-window 0`
-for full history.
-
-## Environment
+建议在单独环境中安装：
 
 ```bash
+conda activate TZ-Satformer
 pip install -r requirements.txt
 ```
 
-## Run
+如果使用 CUDA 12.8 的 PyTorch，请优先按 PyTorch 官方 cu128 index 安装对应版本。
 
-From this directory:
+## 运行
+
+在 `Satfomer/` 目录下直接运行默认实验：
 
 ```bash
 python run_sat_tensor_experiment.py
 ```
 
-CPU-only:
-
-```bash
-python run_sat_tensor_experiment.py --cpu-only
-```
-
-Equivalent old entry:
-
-```bash
-python Satformer.py
-```
-
-Example with explicit settings:
+常用参数示例：
 
 ```bash
 python run_sat_tensor_experiment.py \
-  --tensor-path sat_path_bytes_mb_tensor.npy \
-  --adjacency-path sat_connectivity_tensor_dynamic_60s_1000ms.npz \
-  --observed-ratio 0.1 \
-  --val-ratio 0.1 \
+  --missing-rate 0.90 \
+  --epochs 200 \
   --feature-dim 128 \
   --gcn-hidden-dim 128 \
   --num-modules 10 \
-  --region-size 16 \
-  --center-window 16 \
   --heads 8 \
-  --batch-size 512 \
   --history-window 8 \
-  --warmup-epochs 5 \
-  --epochs 200 \
+  --batch-size 512 \
   --lr 0.001 \
   --target-normalization max \
   --seed 3
 ```
 
-Gradient checkpointing is enabled by default to keep the 10-layer
-encoder/decoder model inside GPU memory. To disable it for debugging:
-
-```bash
-python run_sat_tensor_experiment.py --no-gradient-checkpointing
-```
-
-Quick debug run:
+快速调试一轮：
 
 ```bash
 python run_sat_tensor_experiment.py \
@@ -156,29 +125,46 @@ python run_sat_tensor_experiment.py \
   --log-every 1
 ```
 
-Different sampling rates:
+默认最终只评估 `test`，避免训练结束后长时间扫完整 train/val/test。需要全部评估时使用：
 
 ```bash
-python run_sat_tensor_experiment.py --observed-ratio 0.02
-python run_sat_tensor_experiment.py --observed-ratio 0.04
-python run_sat_tensor_experiment.py --observed-ratio 0.06
-python run_sat_tensor_experiment.py --observed-ratio 0.08
-python run_sat_tensor_experiment.py --observed-ratio 0.10
+python run_sat_tensor_experiment.py --eval-splits all
 ```
 
-Or use missing-rate form:
+可选值：
+
+```text
+--eval-splits none
+--eval-splits test
+--eval-splits val-test
+--eval-splits all
+```
+
+后台运行示例：
 
 ```bash
-python run_sat_tensor_experiment.py --missing-rate 0.9
+mkdir -p logs
+nohup python -u run_sat_tensor_experiment.py \
+  --missing-rate 0.90 \
+  --epochs 200 \
+  --log-every 1 \
+  --eval-splits test \
+  > logs/satformer_mr90_seed3.log 2>&1 &
 ```
 
-## Outputs
+查看日志：
 
-Default outputs look like:
+```bash
+tail -f logs/satformer_mr90_seed3.log
+```
+
+## 输出
+
+默认输出示例：
 
 ```text
 splits/random_observed10_val10_seed_3.npz
-results/random_observed10_val10_seed3_dim128_layers10_norm_max.json
+results/random_observed10_val10_seed3_dim128_layers10_batch512_hist8_norm_max.json
 ```
 
-Read final NMAE and NRMSE from the `test` section of the result JSON.
+最终从 JSON 的 `test` 字段读取 NMAE 和 NRMSE。
