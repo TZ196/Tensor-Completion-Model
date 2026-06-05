@@ -227,6 +227,7 @@ def initialize_output_bias(model, train_values, target_scale):
         return None
     normalized_mean = float(np.mean(train_values / target_scale))
     with torch.no_grad():
+        output_layer.weight.zero_()
         output_layer.bias.fill_(normalized_mean)
     return normalized_mean
 
