@@ -1,6 +1,37 @@
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local environments
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+
+# Local backup kept outside the remote repository
 CostCO_git_backup/
+
+# Training outputs
+results/
+splits/
+runs/
+logs/
+checkpoints/
+outputs/
+wandb/
+*.log
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
 CostCO/__pycache__/
 CostCO/results/
 CostCO/splits/
