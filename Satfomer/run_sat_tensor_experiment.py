@@ -105,9 +105,9 @@ def create_random_completion_split(tensor_path, split_path, observed_ratio, val_
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run SatFormer tensor completion on sat_path_bytes_tensor.npy."
+        description="Run SatFormer tensor completion on sat_path_bytes_mb_tensor.npy."
     )
-    parser.add_argument("--tensor-path", default="sat_path_bytes_tensor.npy")
+    parser.add_argument("--tensor-path", default="sat_path_bytes_mb_tensor.npy")
     parser.add_argument(
         "--adjacency-path",
         default="sat_connectivity_tensor_dynamic_60s_1000ms.npz",

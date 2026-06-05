@@ -8,7 +8,7 @@
 两个项目都使用星间路径流量张量：
 
 ```text
-sat_path_bytes_tensor.npy: 120 x 120 x 60
+sat_path_bytes_mb_tensor.npy: 120 x 120 x 60
 ```
 
 其中 `Satfomer` 还使用动态 ISL 拓扑张量：
@@ -92,7 +92,7 @@ NewModel/
   requirements.txt
   run_sat_tensor_experiment.py
   new_model.py
-  sat_path_bytes_tensor.npy
+  sat_path_bytes_mb_tensor.npy
 ```
 
 如果模型需要动态拓扑，也把拓扑文件放在该模型目录下：

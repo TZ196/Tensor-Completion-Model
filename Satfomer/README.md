@@ -3,7 +3,7 @@
 This project runs SatFormer on the satellite inter-satellite path traffic tensor:
 
 ```text
-sat_path_bytes_tensor.npy: 120 x 120 x 60
+sat_path_bytes_mb_tensor.npy: 120 x 120 x 60
 ```
 
 The dynamic ISL topology tensor is loaded from:
@@ -46,7 +46,7 @@ attention, and adaptive sparse gating. The Transfer Module uses temporal
 self-attention with learnable history/current weights for every OD pair.
 
 The distance/time-delay weight matrix `W` is not used here because
-`sat_path_bytes_tensor.npy` already stores the real inter-satellite path traffic.
+`sat_path_bytes_mb_tensor.npy` already stores the real inter-satellite path traffic.
 
 ## Split And Metrics
 
@@ -120,7 +120,7 @@ Example with explicit settings:
 
 ```bash
 python run_sat_tensor_experiment.py \
-  --tensor-path sat_path_bytes_tensor.npy \
+  --tensor-path sat_path_bytes_mb_tensor.npy \
   --adjacency-path sat_connectivity_tensor_dynamic_60s_1000ms.npz \
   --observed-ratio 0.1 \
   --val-ratio 0.1 \
@@ -130,7 +130,7 @@ python run_sat_tensor_experiment.py \
   --region-size 16 \
   --center-window 16 \
   --heads 8 \
-  --batch-size 128 \
+  --batch-size 512 \
   --history-window 8 \
   --warmup-epochs 5 \
   --epochs 200 \
