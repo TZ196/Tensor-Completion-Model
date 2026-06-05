@@ -67,15 +67,20 @@ Training uses the paper-style settings by default:
 - Adam optimizer;
 - learning rate `0.001`;
 - weight decay `1e-5`;
-- mini-batch size `128`;
+- training updates are grouped by target time step to avoid repeated full-window
+  forward passes;
 - warmup for the first `5` epochs;
 - early stopping with patience `10`;
 - no 10-run averaging.
 
-The training loop is mini-batch based over target tensor entries grouped by
-time step. It no longer performs one full `120 x 120 x 60` reconstruction
-backward pass per epoch. The temporal Transfer Module uses a history window;
-the default is `8` time steps. Use `--history-window 0` for full history.
+The training loop is grouped by target time step. For one optimizer update, it
+builds the history window for one target time step, predicts that time-step
+traffic matrix once, and computes loss on all observed training entries from
+that target time step. It no longer performs one full `120 x 120 x 60`
+reconstruction backward pass per epoch, and it no longer repeats the same
+time-step forward pass for many entry batches. The temporal Transfer Module
+uses a history window; the default is `8` time steps. Use `--history-window 0`
+for full history.
 
 ## Environment
 
@@ -131,6 +136,16 @@ encoder/decoder model inside GPU memory. To disable it for debugging:
 
 ```bash
 python run_sat_tensor_experiment.py --no-gradient-checkpointing
+```
+
+Quick debug run:
+
+```bash
+python run_sat_tensor_experiment.py \
+  --missing-rate 0.90 \
+  --epochs 1 \
+  --max-train-steps-per-epoch 1 \
+  --log-every 1
 ```
 
 Different sampling rates:

@@ -131,6 +131,7 @@ def parse_args():
     parser.add_argument("--history-window", type=int, default=8)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--log-every", type=int, default=50)
+    parser.add_argument("--max-train-steps-per-epoch", type=int, default=0)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument(
         "--target-normalization",
@@ -222,6 +223,15 @@ def iter_time_entry_batches(indices, values, batch_size, rng):
             yield int(time_step), indices[positions], values[positions]
 
 
+def iter_time_groups(indices, values, rng):
+    time_steps = np.unique(indices[:, 2])
+    rng.shuffle(time_steps)
+    for time_step in time_steps:
+        positions = np.flatnonzero(indices[:, 2] == time_step)
+        positions = positions[rng.permutation(positions.shape[0])]
+        yield int(time_step), indices[positions], values[positions]
+
+
 def time_window_bounds(time_step, history_window):
     if history_window <= 0:
         return 0, time_step
@@ -245,6 +255,28 @@ def predict_entries_for_time(
     )
     rows = torch.as_tensor(entry_indices[:, 0], dtype=torch.long, device=input_tensor.device)
     cols = torch.as_tensor(entry_indices[:, 1], dtype=torch.long, device=input_tensor.device)
+    return prediction_matrix[rows, cols]
+
+
+def predict_time_matrix(
+    model,
+    input_tensor,
+    adjacency_tensor,
+    time_step,
+    history_window,
+):
+    start, end = time_window_bounds(time_step, history_window)
+    target_offset = time_step - start
+    return model.forward_time_window(
+        input_tensor[:, :, start : end + 1],
+        adjacency_tensor[:, :, start : end + 1],
+        target_offset=target_offset,
+    )
+
+
+def gather_matrix_entries(prediction_matrix, entry_indices):
+    rows = torch.as_tensor(entry_indices[:, 0], dtype=torch.long, device=prediction_matrix.device)
+    cols = torch.as_tensor(entry_indices[:, 1], dtype=torch.long, device=prediction_matrix.device)
     return prediction_matrix[rows, cols]
 
 
@@ -444,9 +476,14 @@ def main():
     print("Target normalization:", args.target_normalization)
     print("Target scale:", target_scale)
     print("Batch size:", args.batch_size)
+    print("Training update unit: one target time step per optimizer step")
     print("History window:", "full" if args.history_window <= 0 else args.history_window)
     print("Warmup epochs:", args.warmup_epochs)
-    print("Log every batches:", args.log_every)
+    print("Log every steps:", args.log_every)
+    print(
+        "Max train steps per epoch:",
+        "all" if args.max_train_steps_per_epoch <= 0 else args.max_train_steps_per_epoch,
+    )
     print("Gradient checkpointing:", not args.no_gradient_checkpointing)
 
     best_val = float("inf")
@@ -460,22 +497,38 @@ def main():
         model.train()
         epoch_loss_sum = 0.0
         epoch_entry_count = 0
-        epoch_batch_count = 0
-        for time_step, batch_indices, batch_values in iter_time_entry_batches(
+        epoch_step_count = 0
+        epoch_time_steps = np.unique(train_indices[:, 2]).shape[0]
+        print(
+            "Epoch [%d/%d] starting %d time-step update(s)"
+            % (epoch + 1, args.epochs, epoch_time_steps),
+            flush=True,
+        )
+        for time_step, batch_indices, batch_values in iter_time_groups(
             train_indices,
             train_values,
-            args.batch_size,
             rng,
         ):
+            next_step = epoch_step_count + 1
+            should_log_step = args.log_every > 0 and (
+                next_step == 1 or next_step % args.log_every == 0
+            )
+            if should_log_step:
+                print(
+                    "Epoch [%d/%d] step %d/%d target_time %d starting"
+                    % (epoch + 1, args.epochs, next_step, epoch_time_steps, time_step),
+                    flush=True,
+                )
+            step_start_time = time.perf_counter()
             optimizer.zero_grad(set_to_none=True)
-            predictions = predict_entries_for_time(
+            prediction_matrix = predict_time_matrix(
                 model,
                 input_tensor,
                 adjacency_tensor,
                 time_step,
-                batch_indices,
                 args.history_window,
             )
+            predictions = gather_matrix_entries(prediction_matrix, batch_indices)
             targets = torch.as_tensor(
                 batch_values / target_scale,
                 dtype=torch.float32,
@@ -488,22 +541,34 @@ def main():
             batch_size = targets.numel()
             epoch_loss_sum += train_loss.item() * batch_size
             epoch_entry_count += batch_size
-            epoch_batch_count += 1
+            epoch_step_count += 1
 
-            del predictions, targets, train_loss
-            if args.log_every > 0 and epoch_batch_count % args.log_every == 0:
+            del prediction_matrix, predictions, targets, train_loss
+            if should_log_step:
                 running_loss = epoch_loss_sum / max(1, epoch_entry_count)
                 print(
-                    "Epoch [%d/%d] batch %d entries %d running_loss: %.6f"
+                    "Epoch [%d/%d] step %d/%d entries %d running_loss: %.6f step_time: %s"
                     % (
                         epoch + 1,
                         args.epochs,
-                        epoch_batch_count,
+                        epoch_step_count,
+                        epoch_time_steps,
                         epoch_entry_count,
                         running_loss,
+                        format_duration(time.perf_counter() - step_start_time),
                     ),
                     flush=True,
                 )
+            if (
+                args.max_train_steps_per_epoch > 0
+                and epoch_step_count >= args.max_train_steps_per_epoch
+            ):
+                print(
+                    "Reached --max-train-steps-per-epoch=%d for debug run"
+                    % args.max_train_steps_per_epoch,
+                    flush=True,
+                )
+                break
 
         train_loss_value = epoch_loss_sum / max(1, epoch_entry_count)
         val_loss_value = evaluate_mse_loss(
@@ -520,12 +585,12 @@ def main():
             torch.cuda.empty_cache()
 
         print(
-            "Epoch [%d/%d] lr: %.6g batches: %d loss: %.6f val_loss: %.6f"
+            "Epoch [%d/%d] lr: %.6g steps: %d loss: %.6f val_loss: %.6f"
             % (
                 epoch + 1,
                 args.epochs,
                 current_lr,
-                epoch_batch_count,
+                epoch_step_count,
                 train_loss_value,
                 val_loss_value,
             )
@@ -584,6 +649,7 @@ def main():
             "history_window": args.history_window,
             "warmup_epochs": args.warmup_epochs,
             "log_every": args.log_every,
+            "max_train_steps_per_epoch": args.max_train_steps_per_epoch,
             "patience": args.patience,
             "target_normalization": args.target_normalization,
             "target_scale": target_scale,
