@@ -7,7 +7,7 @@ from pprint import pprint
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 
 from satformer_model import SatFormer
 
@@ -731,7 +731,7 @@ def main():
             logged_pred_sum = 0.0
             logged_pred_count = 0
             for time_step, batch_indices, batch_values in time_batch:
-                with autocast():
+                with autocast('cuda'):
                     prediction_matrix = predict_time_matrix(
                         model,
                         input_tensor,

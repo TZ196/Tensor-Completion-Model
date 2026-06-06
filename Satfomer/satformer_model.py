@@ -110,7 +110,7 @@ class ASSIT(nn.Module):
         key_mask = center_mask & valid_key_mask
         if not torch.any(key_mask):
             key_mask = valid_key_mask
-        scores = scores.masked_fill(~key_mask[None, None, :], -1e9)
+        scores = scores.masked_fill(~key_mask[None, None, :], -65504.0)
 
         attention = F.softmax(scores, dim=-1)
         sparse_gate = F.relu(1.0 - self.sparse_regularizer * attention)
