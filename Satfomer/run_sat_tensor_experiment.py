@@ -769,6 +769,8 @@ def main():
 
             train_loss = step_loss_sum / max(1, step_entry_count)
             scaler.scale(train_loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
 
