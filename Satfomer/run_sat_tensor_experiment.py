@@ -638,7 +638,6 @@ def main():
         dropout=args.dropout,
         gradient_checkpointing=not args.no_gradient_checkpointing,
     ).to(device)
-    model = torch.compile(model)
     output_bias_init = initialize_output_bias(model, train_values, target_scale)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = GradScaler()
