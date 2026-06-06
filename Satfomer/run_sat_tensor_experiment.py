@@ -47,12 +47,23 @@ def nonzero_finite_entries(tensor):
     return indices, values, stats
 
 
-def create_random_completion_split(tensor_path, split_path, observed_ratio, val_ratio, seed):
+def create_random_completion_split(
+    tensor_path,
+    split_path,
+    observed_ratio,
+    train_target_ratio,
+    val_ratio,
+    seed,
+):
     tensor = load_tensor(tensor_path)
     if not 0.0 < observed_ratio < 1.0:
         raise ValueError("--observed-ratio must be between 0 and 1")
     if not 0.0 < val_ratio < 1.0:
         raise ValueError("--val-ratio must be between 0 and 1")
+    if not 0.0 < train_target_ratio < 1.0:
+        raise ValueError("--train-target-ratio must be between 0 and 1")
+    if train_target_ratio + val_ratio >= 1.0:
+        raise ValueError("--train-target-ratio + --val-ratio must be less than 1")
 
     indices, values, data_stats = nonzero_finite_entries(tensor)
     if indices.shape[0] < 3:
@@ -60,15 +71,18 @@ def create_random_completion_split(tensor_path, split_path, observed_ratio, val_
 
     rng = np.random.RandomState(seed)
     order = rng.permutation(indices.shape[0])
-    train_size = int(round(indices.shape[0] * observed_ratio))
-    train_size = max(1, min(train_size, indices.shape[0] - 2))
-    remaining_size = indices.shape[0] - train_size
+    input_size = int(round(indices.shape[0] * observed_ratio))
+    input_size = max(1, min(input_size, indices.shape[0] - 3))
+    remaining_size = indices.shape[0] - input_size
+    train_target_size = int(round(remaining_size * train_target_ratio))
+    train_target_size = max(1, min(train_target_size, remaining_size - 2))
     val_size = int(round(remaining_size * val_ratio))
-    val_size = max(1, min(val_size, remaining_size - 1))
+    val_size = max(1, min(val_size, remaining_size - train_target_size - 1))
 
-    train_order = order[:train_size]
-    val_order = order[train_size : train_size + val_size]
-    test_order = order[train_size + val_size :]
+    input_order = order[:input_size]
+    train_target_order = order[input_size : input_size + train_target_size]
+    val_order = order[input_size + train_target_size : input_size + train_target_size + val_size]
+    test_order = order[input_size + train_target_size + val_size :]
 
     split_dir = os.path.dirname(split_path)
     if split_dir and not os.path.exists(split_dir):
@@ -77,14 +91,17 @@ def create_random_completion_split(tensor_path, split_path, observed_ratio, val_
     np.savez(
         split_path,
         shape=np.array(tensor.shape).astype("int32"),
-        train_indices=indices[train_order],
-        train_values=values[train_order],
+        input_indices=indices[input_order],
+        input_values=values[input_order],
+        train_target_indices=indices[train_target_order],
+        train_target_values=values[train_target_order],
         val_indices=indices[val_order],
         val_values=values[val_order],
         test_indices=indices[test_order],
         test_values=values[test_order],
         observed_ratio=np.array(observed_ratio).astype("float32"),
         missing_rate=np.array(1.0 - observed_ratio).astype("float32"),
+        train_target_ratio=np.array(train_target_ratio).astype("float32"),
         val_ratio=np.array(val_ratio).astype("float32"),
         seed=np.array(seed).astype("int32"),
         total_entries=np.array(data_stats["total_entries"]).astype("int64"),
@@ -95,8 +112,10 @@ def create_random_completion_split(tensor_path, split_path, observed_ratio, val_
     )
     return (
         np.array(tensor.shape).astype("int32"),
-        indices[train_order],
-        values[train_order],
+        indices[input_order],
+        values[input_order],
+        indices[train_target_order],
+        values[train_target_order],
         indices[val_order],
         values[val_order],
         indices[test_order],
@@ -115,6 +134,7 @@ def parse_args():
         default="sat_connectivity_tensor_dynamic_60s_1000ms.npz",
     )
     parser.add_argument("--split-path", default=None)
+    parser.add_argument("--train-target-ratio", type=float, default=0.8)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--missing-rate", type=float, default=0.9)
     parser.add_argument("--observed-ratio", type=float, default=None)
@@ -225,6 +245,13 @@ def build_observed_tensor(shape, indices, values, target_scale, device):
     return observed
 
 
+def build_observed_mask(shape, indices, device):
+    observed_mask = torch.zeros(tuple(shape.tolist()), dtype=torch.float32, device=device)
+    idx = torch.as_tensor(indices, dtype=torch.long, device=device)
+    observed_mask[idx[:, 0], idx[:, 1], idx[:, 2]] = 1.0
+    return observed_mask
+
+
 def initialize_output_bias(model, train_values, target_scale):
     output_layer = model.output_projection[-1]
     if not isinstance(output_layer, nn.Linear):
@@ -283,6 +310,7 @@ def time_window_bounds(time_step, history_window):
 def predict_entries_for_time(
     model,
     input_tensor,
+    observed_mask_tensor,
     adjacency_tensor,
     time_step,
     entry_indices,
@@ -293,6 +321,7 @@ def predict_entries_for_time(
     prediction_matrix = model.forward_time_window(
         input_tensor[:, :, start : end + 1],
         adjacency_tensor[:, :, start : end + 1],
+        mask_window=observed_mask_tensor[:, :, start : end + 1],
         target_offset=target_offset,
     )
     rows = torch.as_tensor(entry_indices[:, 0], dtype=torch.long, device=input_tensor.device)
@@ -303,6 +332,7 @@ def predict_entries_for_time(
 def predict_time_matrix(
     model,
     input_tensor,
+    observed_mask_tensor,
     adjacency_tensor,
     time_step,
     history_window,
@@ -312,6 +342,7 @@ def predict_time_matrix(
     return model.forward_time_window(
         input_tensor[:, :, start : end + 1],
         adjacency_tensor[:, :, start : end + 1],
+        mask_window=observed_mask_tensor[:, :, start : end + 1],
         target_offset=target_offset,
     )
 
@@ -342,6 +373,7 @@ def should_run_validation(epoch, total_epochs, val_every):
 def evaluate_mse_loss(
     model,
     input_tensor,
+    observed_mask_tensor,
     adjacency_tensor,
     indices,
     values,
@@ -364,6 +396,7 @@ def evaluate_mse_loss(
             predictions = predict_entries_for_time(
                 model,
                 input_tensor,
+                observed_mask_tensor,
                 adjacency_tensor,
                 int(time_step),
                 batch_indices,
@@ -399,6 +432,7 @@ def nrmse(y_true, y_pred):
 def evaluate_satformer(
     model,
     input_tensor,
+    observed_mask_tensor,
     adjacency_tensor,
     indices,
     values,
@@ -424,6 +458,7 @@ def evaluate_satformer(
             pred = predict_entries_for_time(
                 model,
                 input_tensor,
+                observed_mask_tensor,
                 adjacency_tensor,
                 int(time_step),
                 batch_indices,
@@ -478,6 +513,7 @@ def evaluate_satformer(
 def quick_fill_check(
     model,
     input_tensor,
+    observed_mask_tensor,
     adjacency_tensor,
     test_indices,
     test_values,
@@ -502,6 +538,7 @@ def quick_fill_check(
             pred = predict_entries_for_time(
                 model,
                 input_tensor,
+                observed_mask_tensor,
                 adjacency_tensor,
                 int(time_step),
                 sample_indices[time_positions],
@@ -584,8 +621,9 @@ def main():
     if args.split_path is None:
         args.split_path = os.path.join(
             "splits",
-            "random_observed%d_val%d_seed_%d.npz" % (
+            "random_input%d_target%d_val%d_seed_%d.npz" % (
                 int(round(observed_ratio * 100)),
+                int(round(args.train_target_ratio * 100)),
                 int(round(args.val_ratio * 100)),
                 args.seed,
             ),
@@ -606,8 +644,10 @@ def main():
     device = configure_torch(cpu_only=args.cpu_only, seed=args.seed)
     (
         shape,
-        train_indices,
-        train_values,
+        input_indices,
+        input_values,
+        train_target_indices,
+        train_target_values,
         val_indices,
         val_values,
         test_indices,
@@ -617,6 +657,7 @@ def main():
         args.tensor_path,
         args.split_path,
         observed_ratio,
+        args.train_target_ratio,
         args.val_ratio,
         args.seed,
     )
@@ -626,8 +667,9 @@ def main():
         raise ValueError("Adjacency shape %s does not match tensor shape %s" % (adjacency.shape, shape))
     adjacency_tensor = torch.as_tensor(adjacency, dtype=torch.float32, device=device)
 
-    target_scale = get_target_scale(train_values, args.target_normalization)
-    input_tensor = build_observed_tensor(shape, train_indices, train_values, target_scale, device)
+    target_scale = get_target_scale(input_values, args.target_normalization)
+    input_tensor = build_observed_tensor(shape, input_indices, input_values, target_scale, device)
+    observed_mask_tensor = build_observed_mask(shape, input_indices, device)
 
     model = SatFormer(
         num_nodes=int(shape[0]),
@@ -640,10 +682,10 @@ def main():
         dropout=args.dropout,
         gradient_checkpointing=args.gradient_checkpointing,
     ).to(device)
-    output_bias_init = initialize_output_bias(model, train_values, target_scale)
+    output_bias_init = initialize_output_bias(model, input_values, target_scale)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    use_amp = not args.no_autocast
-    scaler = GradScaler() if use_amp else None
+    use_amp = device.type == "cuda" and not args.no_autocast
+    scaler = GradScaler("cuda") if use_amp else None
     criterion = nn.MSELoss()
 
     print("Tensor shape:", shape.tolist())
@@ -653,7 +695,8 @@ def main():
     print("Observed ratio:", observed_ratio)
     print("Missing rate:", 1.0 - observed_ratio)
     print("Validation ratio within unobserved entries:", args.val_ratio)
-    print("Train entries:", train_indices.shape[0])
+    print("Input observed entries:", input_indices.shape[0])
+    print("Train target missing entries:", train_target_indices.shape[0])
     print("Validation entries:", val_indices.shape[0])
     print("Test entries:", test_indices.shape[0])
     print("Device:", device)
@@ -695,7 +738,7 @@ def main():
         epoch_loss_sum = 0.0
         epoch_entry_count = 0
         epoch_step_count = 0
-        epoch_time_steps = np.unique(train_indices[:, 2]).shape[0]
+        epoch_time_steps = np.unique(train_target_indices[:, 2]).shape[0]
         epoch_time_batches = int(np.ceil(float(epoch_time_steps) / float(args.time_batch_size)))
         print(
             "Epoch [%d/%d] starting %d time-step update(s) in %d optimizer step(s)"
@@ -703,8 +746,8 @@ def main():
             flush=True,
         )
         for time_batch in iter_time_batches(
-            train_indices,
-            train_values,
+            train_target_indices,
+            train_target_values,
             args.time_batch_size,
             rng,
         ):
@@ -739,10 +782,18 @@ def main():
                     prediction_matrix = predict_time_matrix(
                         model,
                         input_tensor,
+                        observed_mask_tensor,
                         adjacency_tensor,
                         time_step,
                         args.history_window,
                     )
+                    predictions = gather_matrix_entries(prediction_matrix, batch_indices)
+                    targets = torch.as_tensor(
+                        batch_values / target_scale,
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                    loss_sum = torch.sum((predictions - targets) ** 2)
                 if should_log_step:
                     pred_min_value = float(torch.min(prediction_matrix).item() * target_scale)
                     pred_max_value = float(torch.max(prediction_matrix).item() * target_scale)
@@ -760,13 +811,6 @@ def main():
                     )
                     logged_pred_sum += pred_sum_value
                     logged_pred_count += pred_count_value
-                predictions = gather_matrix_entries(prediction_matrix, batch_indices)
-                targets = torch.as_tensor(
-                    batch_values / target_scale,
-                    dtype=torch.float32,
-                    device=device,
-                )
-                loss_sum = torch.sum((predictions - targets) ** 2)
                 step_loss_sum = loss_sum if step_loss_sum is None else step_loss_sum + loss_sum
                 step_entry_count += targets.numel()
 
@@ -829,6 +873,7 @@ def main():
             val_loss_value = evaluate_mse_loss(
                 model,
                 input_tensor,
+                observed_mask_tensor,
                 adjacency_tensor,
                 val_indices,
                 val_values,
@@ -894,8 +939,10 @@ def main():
             "sample_filter": "finite_and_nonzero",
             "observed_ratio": observed_ratio,
             "missing_rate": 1.0 - observed_ratio,
+            "train_target_ratio_within_missing": args.train_target_ratio,
             "val_ratio_within_unobserved": args.val_ratio,
-            "train_entries": int(train_indices.shape[0]),
+            "input_observed_entries": int(input_indices.shape[0]),
+            "train_target_missing_entries": int(train_target_indices.shape[0]),
             "val_entries": int(val_indices.shape[0]),
             "test_entries": int(test_indices.shape[0]),
             "feature_dim": args.feature_dim,
@@ -933,7 +980,7 @@ def main():
         },
     }
     eval_data = {
-        "train": (train_indices, train_values),
+        "train": (train_target_indices, train_target_values),
         "val": (val_indices, val_values),
         "test": (test_indices, test_values),
     }
@@ -942,6 +989,7 @@ def main():
         results[split_name] = evaluate_satformer(
             model,
             input_tensor,
+            observed_mask_tensor,
             adjacency_tensor,
             split_indices,
             split_values,
@@ -953,6 +1001,7 @@ def main():
     results["fill_check"] = quick_fill_check(
         model,
         input_tensor,
+        observed_mask_tensor,
         adjacency_tensor,
         test_indices,
         test_values,
