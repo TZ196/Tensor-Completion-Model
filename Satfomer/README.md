@@ -130,6 +130,7 @@ python run_sat_tensor_experiment.py \
   --num-modules 4 \
   --heads 8 \
   --history-window 8 \
+  --time-batch-size 4 \
   --batch-size 512 \
   --lr 0.001 \
   --val-every 5 \
@@ -146,6 +147,7 @@ python run_sat_tensor_experiment.py \
   --max-train-steps-per-epoch 1 \
   --eval-splits none \
   --fill-check-entries 20 \
+  --time-batch-size 4 \
   --log-every 1
 ```
 
@@ -175,6 +177,7 @@ nohup python -u run_sat_tensor_experiment.py \
   --val-every 5 \
   --eval-splits test \
   --fill-check-entries 20 \
+  --time-batch-size 4 \
   > logs/satformer_mr90_dim96_layers4_hist8_val5_seed3.log 2>&1 &
 ```
 

@@ -7,6 +7,7 @@ from pprint import pprint
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
 
 from satformer_model import SatFormer
 
@@ -128,6 +129,7 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--time-batch-size", type=int, default=4)
     parser.add_argument("--history-window", type=int, default=8)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--log-every", type=int, default=50)
@@ -227,7 +229,7 @@ def initialize_output_bias(model, train_values, target_scale):
         return None
     normalized_mean = float(np.mean(train_values / target_scale))
     with torch.no_grad():
-        output_layer.weight.zero_()
+        nn.init.xavier_uniform_(output_layer.weight)
         output_layer.bias.fill_(normalized_mean)
     return normalized_mean
 
@@ -255,6 +257,19 @@ def iter_time_groups(indices, values, rng):
         positions = np.flatnonzero(indices[:, 2] == time_step)
         positions = positions[rng.permutation(positions.shape[0])]
         yield int(time_step), indices[positions], values[positions]
+
+
+def iter_time_batches(indices, values, time_batch_size, rng):
+    if time_batch_size <= 0:
+        raise ValueError("--time-batch-size must be positive")
+    batch = []
+    for item in iter_time_groups(indices, values, rng):
+        batch.append(item)
+        if len(batch) == time_batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def time_window_bounds(time_step, history_window):
@@ -623,8 +638,10 @@ def main():
         dropout=args.dropout,
         gradient_checkpointing=not args.no_gradient_checkpointing,
     ).to(device)
+    model = torch.compile(model)
     output_bias_init = initialize_output_bias(model, train_values, target_scale)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scaler = GradScaler()
     criterion = nn.MSELoss()
 
     print("Tensor shape:", shape.tolist())
@@ -645,8 +662,9 @@ def main():
     print("Target scale:", target_scale)
     print("Output bias init:", output_bias_init)
     print("Batch size:", args.batch_size)
+    print("Time batch size:", args.time_batch_size)
     print("Training objective: masked tensor window -> one target-time traffic matrix")
-    print("Training update unit: one target time step per optimizer step")
+    print("Training update unit: up to %d target time step(s) per optimizer step" % args.time_batch_size)
     print("History window:", "full" if args.history_window <= 0 else args.history_window)
     print("Warmup epochs:", args.warmup_epochs)
     print("Log every steps:", args.log_every)
@@ -675,14 +693,16 @@ def main():
         epoch_entry_count = 0
         epoch_step_count = 0
         epoch_time_steps = np.unique(train_indices[:, 2]).shape[0]
+        epoch_time_batches = int(np.ceil(float(epoch_time_steps) / float(args.time_batch_size)))
         print(
-            "Epoch [%d/%d] starting %d time-step update(s)"
-            % (epoch + 1, args.epochs, epoch_time_steps),
+            "Epoch [%d/%d] starting %d time-step update(s) in %d optimizer step(s)"
+            % (epoch + 1, args.epochs, epoch_time_steps, epoch_time_batches),
             flush=True,
         )
-        for time_step, batch_indices, batch_values in iter_time_groups(
+        for time_batch in iter_time_batches(
             train_indices,
             train_values,
+            args.time_batch_size,
             rng,
         ):
             next_step = epoch_step_count + 1
@@ -690,49 +710,87 @@ def main():
                 next_step == 1 or next_step % args.log_every == 0
             )
             if should_log_step:
+                batch_times = [str(item[0]) for item in time_batch]
                 print(
-                    "Epoch [%d/%d] step %d/%d target_time %d starting"
-                    % (epoch + 1, args.epochs, next_step, epoch_time_steps, time_step),
+                    "Epoch [%d/%d] step %d/%d target_times [%s] starting"
+                    % (
+                        epoch + 1,
+                        args.epochs,
+                        next_step,
+                        epoch_time_batches,
+                        ", ".join(batch_times),
+                    ),
                     flush=True,
                 )
             step_start_time = time.perf_counter()
             optimizer.zero_grad(set_to_none=True)
-            prediction_matrix = predict_time_matrix(
-                model,
-                input_tensor,
-                adjacency_tensor,
-                time_step,
-                args.history_window,
-            )
-            if should_log_step:
-                pred_min = float(torch.min(prediction_matrix).item() * target_scale)
-                pred_max = float(torch.max(prediction_matrix).item() * target_scale)
-                pred_mean = float(torch.mean(prediction_matrix).item() * target_scale)
-            predictions = gather_matrix_entries(prediction_matrix, batch_indices)
-            targets = torch.as_tensor(
-                batch_values / target_scale,
-                dtype=torch.float32,
-                device=device,
-            )
-            train_loss = criterion(predictions, targets)
-            train_loss.backward()
-            optimizer.step()
+            step_loss_sum = None
+            step_entry_count = 0
+            logged_pred_min = None
+            logged_pred_max = None
+            logged_pred_sum = 0.0
+            logged_pred_count = 0
+            for time_step, batch_indices, batch_values in time_batch:
+                with autocast():
+                    prediction_matrix = predict_time_matrix(
+                        model,
+                        input_tensor,
+                        adjacency_tensor,
+                        time_step,
+                        args.history_window,
+                    )
+                if should_log_step:
+                    pred_min_value = float(torch.min(prediction_matrix).item() * target_scale)
+                    pred_max_value = float(torch.max(prediction_matrix).item() * target_scale)
+                    pred_sum_value = float(torch.sum(prediction_matrix).item() * target_scale)
+                    pred_count_value = prediction_matrix.numel()
+                    logged_pred_min = (
+                        pred_min_value
+                        if logged_pred_min is None
+                        else min(logged_pred_min, pred_min_value)
+                    )
+                    logged_pred_max = (
+                        pred_max_value
+                        if logged_pred_max is None
+                        else max(logged_pred_max, pred_max_value)
+                    )
+                    logged_pred_sum += pred_sum_value
+                    logged_pred_count += pred_count_value
+                predictions = gather_matrix_entries(prediction_matrix, batch_indices)
+                targets = torch.as_tensor(
+                    batch_values / target_scale,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                loss_sum = torch.sum((predictions - targets) ** 2)
+                step_loss_sum = loss_sum if step_loss_sum is None else step_loss_sum + loss_sum
+                step_entry_count += targets.numel()
 
-            batch_size = targets.numel()
-            epoch_loss_sum += train_loss.item() * batch_size
-            epoch_entry_count += batch_size
+                del prediction_matrix, predictions, targets, loss_sum
+
+            train_loss = step_loss_sum / max(1, step_entry_count)
+            scaler.scale(train_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            epoch_loss_sum += train_loss.item() * step_entry_count
+            epoch_entry_count += step_entry_count
             epoch_step_count += 1
 
-            del prediction_matrix, predictions, targets, train_loss
+            del train_loss, step_loss_sum
             if should_log_step:
                 running_loss = epoch_loss_sum / max(1, epoch_entry_count)
+                pred_min = logged_pred_min if logged_pred_min is not None else 0.0
+                pred_max = logged_pred_max if logged_pred_max is not None else 0.0
+                pred_mean = logged_pred_sum / max(1, logged_pred_count)
                 print(
-                    "Epoch [%d/%d] step %d/%d entries %d running_loss: %.6f pred[min/mean/max]: %.6f/%.6f/%.6f step_time: %s"
+                    "Epoch [%d/%d] step %d/%d target_times %d entries %d running_loss: %.6f pred[min/mean/max]: %.6f/%.6f/%.6f step_time: %s"
                     % (
                         epoch + 1,
                         args.epochs,
                         epoch_step_count,
-                        epoch_time_steps,
+                        epoch_time_batches,
+                        len(time_batch),
                         epoch_entry_count,
                         running_loss,
                         pred_min,
@@ -842,6 +900,7 @@ def main():
             "epochs": args.epochs,
             "completed_epochs": completed_epochs,
             "batch_size": args.batch_size,
+            "time_batch_size": args.time_batch_size,
             "history_window": args.history_window,
             "warmup_epochs": args.warmup_epochs,
             "log_every": args.log_every,

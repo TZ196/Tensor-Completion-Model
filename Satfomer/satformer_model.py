@@ -216,7 +216,7 @@ class SatFormer(nn.Module):
     ):
         super().__init__()
         self.gradient_checkpointing = gradient_checkpointing
-        self.input_projection = nn.Linear(1, feature_dim)
+        self.input_projection = nn.Linear(2, feature_dim)  # [traffic, observed_mask]
         self.encoder = nn.ModuleList(
             [
                 SpatioTemporalModule(
@@ -262,7 +262,9 @@ class SatFormer(nn.Module):
         return self.transfer(h)
 
     def _encode_time_step(self, x_t, adjacency):
-        h = self.input_projection(x_t.unsqueeze(-1))
+        mask_t = (x_t != 0).float()               # [N, N] — 非零=观测，零=缺失填充
+        x_inp = torch.stack([x_t, mask_t], dim=-1)  # [N, N, 2]
+        h = self.input_projection(x_inp)
         for module in self.encoder:
             h = self._run_module(module, h, adjacency)
         return h
