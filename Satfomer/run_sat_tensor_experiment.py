@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import time
+from contextlib import nullcontext
 from pprint import pprint
 
 import numpy as np
@@ -125,13 +126,14 @@ def parse_args():
     parser.add_argument("--heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--gradient-checkpointing", action="store_true")
+    parser.add_argument("--no-autocast", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--time-batch-size", type=int, default=4)
     parser.add_argument("--history-window", type=int, default=8)
-    parser.add_argument("--warmup-epochs", type=int, default=5)
+    parser.add_argument("--warmup-epochs", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument(
         "--val-every",
@@ -640,7 +642,8 @@ def main():
     ).to(device)
     output_bias_init = initialize_output_bias(model, train_values, target_scale)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scaler = GradScaler()
+    use_amp = not args.no_autocast
+    scaler = GradScaler() if use_amp else None
     criterion = nn.MSELoss()
 
     print("Tensor shape:", shape.tolist())
@@ -678,6 +681,7 @@ def main():
         "all" if args.max_train_steps_per_epoch <= 0 else args.max_train_steps_per_epoch,
     )
     print("Gradient checkpointing:", args.gradient_checkpointing)
+    print("Autocast AMP:", use_amp)
 
     best_val = float("inf")
     best_state = None
@@ -730,7 +734,8 @@ def main():
             logged_pred_sum = 0.0
             logged_pred_count = 0
             for time_step, batch_indices, batch_values in time_batch:
-                with autocast('cuda'):
+                amp_ctx = autocast('cuda') if use_amp else nullcontext()
+                with amp_ctx:
                     prediction_matrix = predict_time_matrix(
                         model,
                         input_tensor,
@@ -768,11 +773,16 @@ def main():
                 del prediction_matrix, predictions, targets, loss_sum
 
             train_loss = step_loss_sum / max(1, step_entry_count)
-            scaler.scale(train_loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            if use_amp:
+                scaler.scale(train_loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                train_loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
 
             epoch_loss_sum += train_loss.item() * step_entry_count
             epoch_entry_count += step_entry_count
