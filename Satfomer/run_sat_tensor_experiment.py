@@ -124,7 +124,7 @@ def parse_args():
     parser.add_argument("--center-window", type=int, default=16)
     parser.add_argument("--heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.0)
-    parser.add_argument("--no-gradient-checkpointing", action="store_true")
+    parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--epochs", type=int, default=200)
@@ -636,7 +636,7 @@ def main():
         center_window=args.center_window,
         heads=args.heads,
         dropout=args.dropout,
-        gradient_checkpointing=not args.no_gradient_checkpointing,
+        gradient_checkpointing=args.gradient_checkpointing,
     ).to(device)
     output_bias_init = initialize_output_bias(model, train_values, target_scale)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -677,7 +677,7 @@ def main():
         "Max train steps per epoch:",
         "all" if args.max_train_steps_per_epoch <= 0 else args.max_train_steps_per_epoch,
     )
-    print("Gradient checkpointing:", not args.no_gradient_checkpointing)
+    print("Gradient checkpointing:", args.gradient_checkpointing)
 
     best_val = float("inf")
     best_state = None
@@ -895,7 +895,7 @@ def main():
             "center_window": args.center_window,
             "heads": args.heads,
             "dropout": args.dropout,
-            "gradient_checkpointing": not args.no_gradient_checkpointing,
+            "gradient_checkpointing": args.gradient_checkpointing,
             "lr": args.lr,
             "weight_decay": args.weight_decay,
             "epochs": args.epochs,

@@ -200,7 +200,6 @@ python -u run_sat_tensor_experiment.py \
   --epochs 200 \
   --val-every 5 \
   --log-every 1 \
-  --eval-splits test \
-  --no-gradient-checkpointing
+  --eval-splits test
 
 最终从 JSON 的 `test` 字段读取 NMAE 和 NRMSE。
