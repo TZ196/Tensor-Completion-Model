@@ -85,6 +85,62 @@ def create_costco(shape, rank=20, nc=None):
     return k.Model(inputs=inputs, outputs=outputs)
 
 
+def create_topo_costco(shape, rank=20, nc=None, topo_dim=7):
+    """Create a topology-aware CoSTCo model.
+
+    The index branch is the original CoSTCo embedding/convolution stack. The
+    topology branch learns numeric features extracted from A_t for each
+    (source, destination, time) sample.
+    """
+    if nc is None:
+        nc = rank
+
+    shape = list(shape)
+    index_inputs = [
+        k.Input(shape=(1,), dtype="int32", name="mode_%d_input" % i)
+        for i in range(len(shape))
+    ]
+    embeds = [
+        k.layers.Embedding(
+            output_dim=rank,
+            input_dim=shape[i],
+            name="mode_%d_embedding" % i,
+        )(index_inputs[i])
+        for i in range(len(shape))
+    ]
+
+    x = k.layers.Concatenate(axis=1)(embeds)
+    x = k.layers.Reshape(target_shape=(rank, len(shape), 1))(x)
+    x = k.layers.Conv2D(
+        nc,
+        kernel_size=(1, len(shape)),
+        activation="relu",
+        padding="valid"
+    )(x)
+    x = k.layers.Conv2D(
+        nc,
+        kernel_size=(rank, 1),
+        activation="relu",
+        padding="valid"
+    )(x)
+    x = k.layers.Flatten()(x)
+    x = k.layers.Dense(nc, activation="relu")(x)
+
+    topo_input = k.Input(
+        shape=(topo_dim,),
+        dtype="float32",
+        name="topology_features",
+    )
+    topo_x = k.layers.Dense(nc, activation="relu")(topo_input)
+    topo_x = k.layers.Dense(nc, activation="relu")(topo_x)
+
+    fused = k.layers.Concatenate()([x, topo_x])
+    fused = k.layers.Dense(nc, activation="relu")(fused)
+    fused = k.layers.Dense(max(1, nc // 2), activation="relu")(fused)
+    outputs = k.layers.Dense(1, activation="relu")(fused)
+    return k.Model(inputs=index_inputs + [topo_input], outputs=outputs)
+
+
 def compile_costco(model, lr=1e-4):
     optimizer = k.optimizers.Adam(learning_rate=lr)
     model.compile(optimizer, loss="mse", metrics=["mae"])
@@ -95,6 +151,30 @@ def evaluate_costco(model, indices, values, batch_size=1024, verbose=1,
                     target_scale=1.0):
     pred = model.predict(
         transform_indices(indices),
+        batch_size=batch_size,
+        verbose=verbose
+    ).flatten()
+    pred = pred * target_scale
+    pred = np.maximum(pred, 0.0)
+    metrics = {
+        "rmse": float(rmse(values, pred)),
+        "mae": float(mae(values, pred)),
+        "nmae": float(nmae(values, pred)),
+        "nrmse": float(nrmse(values, pred)),
+        "y_true_min": float(np.min(values)),
+        "y_true_max": float(np.max(values)),
+        "y_true_mean": float(np.mean(values)),
+        "y_pred_min": float(np.min(pred)),
+        "y_pred_max": float(np.max(pred)),
+        "y_pred_mean": float(np.mean(pred)),
+    }
+    return metrics
+
+
+def evaluate_topo_costco(model, indices, values, topo_features,
+                         batch_size=1024, verbose=1, target_scale=1.0):
+    pred = model.predict(
+        transform_indices(indices) + [topo_features],
         batch_size=batch_size,
         verbose=verbose
     ).flatten()

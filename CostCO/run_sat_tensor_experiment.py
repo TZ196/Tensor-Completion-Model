@@ -10,7 +10,9 @@ from costco_model import (
     compile_costco,
     configure_tensorflow,
     create_costco,
+    create_topo_costco,
     evaluate_costco,
+    evaluate_topo_costco,
     transform_indices,
 )
 
@@ -20,6 +22,139 @@ def load_tensor(path):
     if tensor.ndim != 3:
         raise ValueError("Expected a 3-D tensor, got shape %s" % (tensor.shape,))
     return tensor.astype("float32")
+
+
+def load_connectivity_tensor(path, traffic_shape):
+    data = np.load(path)
+    print("Topology npz keys:", data.files)
+
+    if "arr_0" in data.files:
+        topo = data["arr_0"]
+    elif "connectivity" in data.files:
+        topo = data["connectivity"]
+    elif "adjacency" in data.files:
+        topo = data["adjacency"]
+    else:
+        raise ValueError(
+            "Cannot find topology tensor in %s, keys=%s" %
+            (path, data.files)
+        )
+
+    topo = topo.astype("float32")
+    if topo.ndim != 3:
+        raise ValueError("Expected a 3-D topology tensor, got %s" %
+                         (topo.shape,))
+
+    traffic_shape = tuple(int(v) for v in traffic_shape)
+    if topo.shape == (traffic_shape[2], traffic_shape[0], traffic_shape[1]):
+        pass
+    elif topo.shape == traffic_shape:
+        topo = np.transpose(topo, (2, 0, 1))
+    elif topo.shape[0] == traffic_shape[2]:
+        pass
+    elif topo.shape[-1] == traffic_shape[2]:
+        topo = np.transpose(topo, (2, 0, 1))
+    else:
+        raise ValueError(
+            "Unexpected topology shape %s for traffic shape %s" %
+            (topo.shape, traffic_shape)
+        )
+
+    if topo.shape[0] != traffic_shape[2]:
+        raise ValueError(
+            "Topology time length %d does not match traffic time length %d" %
+            (topo.shape[0], traffic_shape[2])
+        )
+    if topo.shape[1] != traffic_shape[0] or topo.shape[2] != traffic_shape[1]:
+        raise ValueError(
+            "Topology node size %s does not match traffic matrix size %s" %
+            (topo.shape[1:], traffic_shape[:2])
+        )
+
+    topo = np.nan_to_num(topo, nan=0.0, posinf=0.0, neginf=0.0)
+    return (topo > 0).astype("float32")
+
+
+def compute_shortest_hop_features(topo):
+    """Compute all-pairs unweighted hop distances for each time slice."""
+    time_len, node_count, _ = topo.shape
+    unreachable_hops = float(node_count + 1)
+    dist_all = np.full(
+        (time_len, node_count, node_count),
+        unreachable_hops,
+        dtype="float32",
+    )
+    reachable_all = np.zeros(
+        (time_len, node_count, node_count),
+        dtype="float32",
+    )
+
+    for t in range(time_len):
+        adjacency = topo[t] > 0
+        for src in range(node_count):
+            dist = dist_all[t, src]
+            dist[src] = 0.0
+            queue = [src]
+            head = 0
+            while head < len(queue):
+                current = queue[head]
+                head += 1
+                neighbors = np.flatnonzero(adjacency[current])
+                next_distance = dist[current] + 1.0
+                for neighbor in neighbors:
+                    if dist[neighbor] == unreachable_hops:
+                        dist[neighbor] = next_distance
+                        queue.append(int(neighbor))
+
+        reachable_all[t] = (dist_all[t] < unreachable_hops).astype("float32")
+
+    return dist_all, reachable_all
+
+
+def build_topology_features(indices, topo, dist_all=None, reachable_all=None):
+    src = indices[:, 0]
+    dst = indices[:, 1]
+    time = indices[:, 2]
+
+    degrees = topo.sum(axis=2)
+    two_hop_all = np.matmul(topo, topo)
+
+    direct_edge = topo[time, src, dst]
+    deg_src = degrees[time, src]
+    deg_dst = degrees[time, dst]
+    common_neighbors = np.sum(
+        topo[time, src, :] * topo[time, dst, :],
+        axis=1,
+    )
+    two_hop_paths = two_hop_all[time, src, dst]
+
+    feature_list = [
+        direct_edge,
+        deg_src,
+        deg_dst,
+        common_neighbors,
+        two_hop_paths,
+    ]
+
+    if dist_all is not None and reachable_all is not None:
+        feature_list.extend([
+            dist_all[time, src, dst],
+            reachable_all[time, src, dst],
+        ])
+
+    return np.stack(feature_list, axis=1).astype("float32")
+
+
+def normalize_topology_features(train_features, val_features, test_features):
+    mean = train_features.mean(axis=0, keepdims=True)
+    std = train_features.std(axis=0, keepdims=True) + 1e-6
+    return (
+        (train_features - mean) / std,
+        (val_features - mean) / std,
+        (test_features - mean) / std,
+        mean.flatten().astype("float32"),
+        std.flatten().astype("float32"),
+    )
 
 
 def nonzero_finite_entries(tensor):
@@ -132,12 +267,23 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument("--metrics-path", default=None)
+    parser.add_argument(
+        "--topology-path",
+        default="sat_connectivity_tensor_dynamic_60s_1000ms.npz",
+    )
+    parser.add_argument("--use-topology", action="store_true")
+    parser.add_argument(
+        "--skip-topology-shortest-path",
+        action="store_true",
+        help="Skip shortest_path_hops and reachable topology features.",
+    )
     return parser.parse_args()
 
 
 def default_output_path(output_dir, observed_ratio, val_ratio, seed, rank, nc,
-                        target_normalization):
-    name = "random_observed%d_val%d_seed%d_rank%d_nc%d_norm_%s.json" % (
+                        target_normalization, model_name="costco"):
+    name = "%s_random_observed%d_val%d_seed%d_rank%d_nc%d_norm_%s.json" % (
+        model_name,
         int(round(observed_ratio * 100)),
         int(round(val_ratio * 100)),
         seed,
@@ -185,6 +331,7 @@ def main():
         nc = args.nc
 
     if args.metrics_path is None:
+        model_name = "topo_costco" if args.use_topology else "costco"
         args.metrics_path = default_output_path(
             "results",
             observed_ratio,
@@ -193,6 +340,7 @@ def main():
             args.rank,
             nc,
             args.target_normalization,
+            model_name=model_name,
         )
 
     configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
@@ -241,16 +389,97 @@ def main():
     print("Target scale:", target_scale)
     print("Metrics scale: original target values")
 
-    model = create_costco(shape, rank=args.rank, nc=nc)
+    train_topo_features = None
+    val_topo_features = None
+    test_topo_features = None
+    topology_config = {"use_topology": bool(args.use_topology)}
+
+    if args.use_topology:
+        topo = load_connectivity_tensor(args.topology_path, shape)
+        use_shortest_path = not args.skip_topology_shortest_path
+        print("Topology shape:", topo.shape)
+        print("Topology shortest path:", use_shortest_path)
+
+        dist_all = None
+        reachable_all = None
+        if use_shortest_path:
+            dist_all, reachable_all = compute_shortest_hop_features(topo)
+
+        train_topo_raw = build_topology_features(
+            train_indices,
+            topo,
+            dist_all=dist_all,
+            reachable_all=reachable_all,
+        )
+        val_topo_raw = build_topology_features(
+            val_indices,
+            topo,
+            dist_all=dist_all,
+            reachable_all=reachable_all,
+        )
+        test_topo_raw = build_topology_features(
+            test_indices,
+            topo,
+            dist_all=dist_all,
+            reachable_all=reachable_all,
+        )
+        (
+            train_topo_features,
+            val_topo_features,
+            test_topo_features,
+            topo_feature_mean,
+            topo_feature_std,
+        ) = normalize_topology_features(
+            train_topo_raw,
+            val_topo_raw,
+            test_topo_raw,
+        )
+        topology_feature_names = [
+            "direct_edge",
+            "source_degree",
+            "destination_degree",
+            "common_neighbors",
+            "two_hop_paths",
+        ]
+        if use_shortest_path:
+            topology_feature_names.extend([
+                "shortest_path_hops",
+                "reachable",
+            ])
+        topology_config = {
+            "use_topology": True,
+            "topology_path": args.topology_path,
+            "topology_shape": [int(v) for v in topo.shape],
+            "topology_features": topology_feature_names,
+            "topology_feature_dim": int(train_topo_features.shape[1]),
+            "topology_feature_normalization": "train_zscore",
+            "topology_feature_mean": topo_feature_mean.tolist(),
+            "topology_feature_std": topo_feature_std.tolist(),
+            "topology_shortest_path": bool(use_shortest_path),
+        }
+
+        model = create_topo_costco(
+            shape,
+            rank=args.rank,
+            nc=nc,
+            topo_dim=train_topo_features.shape[1],
+        )
+        train_x = transform_indices(train_indices) + [train_topo_features]
+        val_x = transform_indices(val_indices) + [val_topo_features]
+    else:
+        model = create_costco(shape, rank=args.rank, nc=nc)
+        train_x = transform_indices(train_indices)
+        val_x = transform_indices(val_indices)
+
     compile_costco(model, lr=args.lr)
     model.fit(
-        x=transform_indices(train_indices),
+        x=train_x,
         y=train_targets,
         verbose=1,
         epochs=args.epochs,
         batch_size=args.batch_size,
         validation_data=(
-            transform_indices(val_indices),
+            val_x,
             val_targets,
         ),
         callbacks=[
@@ -291,26 +520,51 @@ def main():
             "seed": args.seed,
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
+            **topology_config,
         },
-        "train": evaluate_costco(
+    }
+
+    if args.use_topology:
+        results["train"] = evaluate_topo_costco(
+            model,
+            train_indices,
+            train_values,
+            train_topo_features,
+            target_scale=target_scale,
+        )
+        results["val"] = evaluate_topo_costco(
+            model,
+            val_indices,
+            val_values,
+            val_topo_features,
+            target_scale=target_scale,
+        )
+        results["test"] = evaluate_topo_costco(
+            model,
+            test_indices,
+            test_values,
+            test_topo_features,
+            target_scale=target_scale,
+        )
+    else:
+        results["train"] = evaluate_costco(
             model,
             train_indices,
             train_values,
             target_scale=target_scale,
-        ),
-        "val": evaluate_costco(
+        )
+        results["val"] = evaluate_costco(
             model,
             val_indices,
             val_values,
             target_scale=target_scale,
-        ),
-        "test": evaluate_costco(
+        )
+        results["test"] = evaluate_costco(
             model,
             test_indices,
             test_values,
             target_scale=target_scale,
-        ),
-    }
+        )
 
     pprint(results)
     metrics_dir = os.path.dirname(args.metrics_path)
