@@ -252,6 +252,24 @@ def build_observed_mask(shape, indices, device):
     return observed_mask
 
 
+def normalize_adjacency_tensor(adjacency_tensor):
+    num_nodes = adjacency_tensor.size(0)
+    eye = torch.eye(
+        num_nodes,
+        dtype=adjacency_tensor.dtype,
+        device=adjacency_tensor.device,
+    )
+    normalized_steps = []
+    for time_step in range(adjacency_tensor.size(-1)):
+        a_hat = adjacency_tensor[:, :, time_step].float() + eye
+        degree = a_hat.sum(dim=1).clamp_min(1.0)
+        d_inv_sqrt = torch.pow(degree, -0.5)
+        normalized_steps.append(d_inv_sqrt[:, None] * a_hat * d_inv_sqrt[None, :])
+    normalized = torch.stack(normalized_steps, dim=-1)
+    normalized._satformer_normalized = True
+    return normalized
+
+
 def initialize_output_bias(model, train_values, target_scale):
     output_layer = model.output_projection[-1]
     if not isinstance(output_layer, nn.Linear):
@@ -666,6 +684,7 @@ def main():
     if tuple(adjacency.shape) != tuple(shape.tolist()):
         raise ValueError("Adjacency shape %s does not match tensor shape %s" % (adjacency.shape, shape))
     adjacency_tensor = torch.as_tensor(adjacency, dtype=torch.float32, device=device)
+    adjacency_tensor = normalize_adjacency_tensor(adjacency_tensor)
 
     target_scale = get_target_scale(input_values, args.target_normalization)
     input_tensor = build_observed_tensor(shape, input_indices, input_values, target_scale, device)
@@ -686,10 +705,10 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     use_amp = device.type == "cuda" and not args.no_autocast
     scaler = GradScaler("cuda") if use_amp else None
-    criterion = nn.MSELoss()
 
     print("Tensor shape:", shape.tolist())
     print("Topology shape:", list(adjacency.shape))
+    print("Adjacency normalization: cached")
     print("Split mode: random transductive completion")
     print("Non-zero finite entries:", data_stats["nonzero_finite_entries"])
     print("Observed ratio:", observed_ratio)
@@ -935,6 +954,7 @@ def main():
         "config": {
             "tensor_path": args.tensor_path,
             "adjacency_path": args.adjacency_path,
+            "adjacency_normalization": "cached",
             "split_mode": "random_transductive_completion",
             "sample_filter": "finite_and_nonzero",
             "observed_ratio": observed_ratio,
