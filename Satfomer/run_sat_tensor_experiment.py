@@ -274,22 +274,6 @@ def initialize_output_bias(model, train_values, target_scale):
     return normalized_mean
 
 
-def gather_entries(tensor, indices):
-    idx = torch.as_tensor(indices, dtype=torch.long, device=tensor.device)
-    return tensor[idx[:, 0], idx[:, 1], idx[:, 2]]
-
-
-def iter_time_entry_batches(indices, values, batch_size, rng):
-    time_steps = np.unique(indices[:, 2])
-    rng.shuffle(time_steps)
-    for time_step in time_steps:
-        time_positions = np.flatnonzero(indices[:, 2] == time_step)
-        time_positions = time_positions[rng.permutation(time_positions.shape[0])]
-        for start in range(0, time_positions.shape[0], batch_size):
-            positions = time_positions[start : start + batch_size]
-            yield int(time_step), indices[positions], values[positions]
-
-
 def iter_time_groups(indices, values, rng):
     time_steps = np.unique(indices[:, 2])
     rng.shuffle(time_steps)
