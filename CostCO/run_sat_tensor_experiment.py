@@ -30,6 +30,8 @@ def load_connectivity_tensor(path, traffic_shape):
 
     if "arr_0" in data.files:
         topo = data["arr_0"]
+    elif "sat_connectivity" in data.files:
+        topo = data["sat_connectivity"]
     elif "connectivity" in data.files:
         topo = data["connectivity"]
     elif "adjacency" in data.files:
