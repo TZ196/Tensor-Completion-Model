@@ -396,7 +396,7 @@ class SatFormer(nn.Module):
             h = self.input_projection(x[:, :, t].unsqueeze(-1))
             adj_t = adjacency_matrices[:, :, t]
             for module in self.encoder:
-                h = h + self._run_module(module, h, adj_t)
+                h = self._run_module(module, h, adj_t)
             encoded.append(h)
         return torch.stack(encoded, dim=0)
 
@@ -413,7 +413,7 @@ class SatFormer(nn.Module):
             d = h[t]
             adj_t = adjacency_matrices[:, :, t]
             for module in self.decoder:
-                d = d + self._run_module(module, d, adj_t)
+                d = self._run_module(module, d, adj_t)
             y = self.output_projection(d).squeeze(-1)  # [N, N]
             decoded.append(y.unsqueeze(-1))
         return torch.cat(decoded, dim=-1)  # [N, N, T]
