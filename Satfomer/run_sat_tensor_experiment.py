@@ -245,13 +245,6 @@ def build_observed_tensor(shape, indices, values, target_scale, device):
     return observed
 
 
-def build_observed_mask(shape, indices, device):
-    observed_mask = torch.zeros(tuple(shape.tolist()), dtype=torch.float32, device=device)
-    idx = torch.as_tensor(indices, dtype=torch.long, device=device)
-    observed_mask[idx[:, 0], idx[:, 1], idx[:, 2]] = 1.0
-    return observed_mask
-
-
 def normalize_adjacency_tensor(adjacency_tensor):
     num_nodes = adjacency_tensor.size(0)
     eye = torch.eye(
@@ -328,7 +321,6 @@ def time_window_bounds(time_step, history_window):
 def predict_entries_for_time(
     model,
     input_tensor,
-    observed_mask_tensor,
     adjacency_tensor,
     time_step,
     entry_indices,
@@ -339,7 +331,6 @@ def predict_entries_for_time(
     prediction_matrix = model.forward_time_window(
         input_tensor[:, :, start : end + 1],
         adjacency_tensor[:, :, start : end + 1],
-        mask_window=observed_mask_tensor[:, :, start : end + 1],
         target_offset=target_offset,
     )
     rows = torch.as_tensor(entry_indices[:, 0], dtype=torch.long, device=input_tensor.device)
@@ -350,7 +341,6 @@ def predict_entries_for_time(
 def predict_time_matrix(
     model,
     input_tensor,
-    observed_mask_tensor,
     adjacency_tensor,
     time_step,
     history_window,
@@ -360,7 +350,6 @@ def predict_time_matrix(
     return model.forward_time_window(
         input_tensor[:, :, start : end + 1],
         adjacency_tensor[:, :, start : end + 1],
-        mask_window=observed_mask_tensor[:, :, start : end + 1],
         target_offset=target_offset,
     )
 
@@ -391,7 +380,6 @@ def should_run_validation(epoch, total_epochs, val_every):
 def evaluate_mse_loss(
     model,
     input_tensor,
-    observed_mask_tensor,
     adjacency_tensor,
     indices,
     values,
@@ -414,7 +402,6 @@ def evaluate_mse_loss(
             predictions = predict_entries_for_time(
                 model,
                 input_tensor,
-                observed_mask_tensor,
                 adjacency_tensor,
                 int(time_step),
                 batch_indices,
@@ -450,7 +437,6 @@ def nrmse(y_true, y_pred):
 def evaluate_satformer(
     model,
     input_tensor,
-    observed_mask_tensor,
     adjacency_tensor,
     indices,
     values,
@@ -476,7 +462,6 @@ def evaluate_satformer(
             pred = predict_entries_for_time(
                 model,
                 input_tensor,
-                observed_mask_tensor,
                 adjacency_tensor,
                 int(time_step),
                 batch_indices,
@@ -531,7 +516,6 @@ def evaluate_satformer(
 def quick_fill_check(
     model,
     input_tensor,
-    observed_mask_tensor,
     adjacency_tensor,
     test_indices,
     test_values,
@@ -556,7 +540,6 @@ def quick_fill_check(
             pred = predict_entries_for_time(
                 model,
                 input_tensor,
-                observed_mask_tensor,
                 adjacency_tensor,
                 int(time_step),
                 sample_indices[time_positions],
@@ -688,7 +671,6 @@ def main():
 
     target_scale = get_target_scale(input_values, args.target_normalization)
     input_tensor = build_observed_tensor(shape, input_indices, input_values, target_scale, device)
-    observed_mask_tensor = build_observed_mask(shape, input_indices, device)
 
     model = SatFormer(
         num_nodes=int(shape[0]),
@@ -801,7 +783,6 @@ def main():
                     prediction_matrix = predict_time_matrix(
                         model,
                         input_tensor,
-                        observed_mask_tensor,
                         adjacency_tensor,
                         time_step,
                         args.history_window,
@@ -892,7 +873,6 @@ def main():
             val_loss_value = evaluate_mse_loss(
                 model,
                 input_tensor,
-                observed_mask_tensor,
                 adjacency_tensor,
                 val_indices,
                 val_values,
@@ -1009,7 +989,6 @@ def main():
         results[split_name] = evaluate_satformer(
             model,
             input_tensor,
-            observed_mask_tensor,
             adjacency_tensor,
             split_indices,
             split_values,
@@ -1021,7 +1000,6 @@ def main():
     results["fill_check"] = quick_fill_check(
         model,
         input_tensor,
-        observed_mask_tensor,
         adjacency_tensor,
         test_indices,
         test_values,
