@@ -1,0 +1,96 @@
+MindText CoSTCo staged experiment commands
+=========================================
+
+Run from:
+  cd CostCO/multimodal_text
+
+Prerequisite:
+  text_data/endo_text_embeddings.npy
+  text_data/exo_text_embeddings.npy
+  ../splits/random_observed10_val10_seed_3.npz
+
+Stage 1: CoSTCo + text concat baseline
+--------------------------------------
+python run_text_sat_tensor_experiment.py \
+  --tensor-path ../sat_path_bytes_mb_tensor.npy \
+  --split-path ../splits/random_observed10_val10_seed_3.npz \
+  --endo-embedding-path text_data/endo_text_embeddings.npy \
+  --exo-embedding-path text_data/exo_text_embeddings.npy \
+  --rank 50 \
+  --nc 64 \
+  --text-stage concat \
+  --text-projection-dim 128 \
+  --lr 1e-3 \
+  --epochs 200 \
+  --batch-size 256 \
+  --target-normalization max \
+  --seed 3
+
+Stage 2: GCN-CoSTCo + text concat baseline
+------------------------------------------
+python run_gcn_text_sat_tensor_experiment.py \
+  --tensor-path ../sat_path_bytes_mb_tensor.npy \
+  --topology-path ../sat_connectivity_tensor_dynamic_60s_1000ms.npz \
+  --split-path ../splits/random_observed10_val10_seed_3.npz \
+  --endo-embedding-path text_data/endo_text_embeddings.npy \
+  --exo-embedding-path text_data/exo_text_embeddings.npy \
+  --rank 50 \
+  --nc 64 \
+  --node-dim 64 \
+  --gcn-dim 128 \
+  --text-stage concat \
+  --text-projection-dim 128 \
+  --lr 1e-3 \
+  --epochs 200 \
+  --batch-size 256 \
+  --target-normalization max \
+  --seed 3
+
+Stage 3a: Add cross-view text attention
+---------------------------------------
+Use the Stage 2 command and change:
+  --text-stage cross_attention
+
+Stage 3b: Add semantic gating
+-----------------------------
+Use the Stage 2 command and change:
+  --text-stage semantic_gating
+
+Stage 3c: Add segment-level content condenser
+---------------------------------------------
+Use the Stage 2 command and change/add:
+  --text-stage segment_condenser \
+  --condenser-alpha 0.5 \
+  --condenser-epsilon 0.05 \
+  --condenser-loss-weight 1e-4
+
+Stage 3d: Add multimodal semantic alignment
+-------------------------------------------
+Use Stage 3a/3b/3c and add:
+  --flow-text-loss-weight 0.01 \
+  --graph-text-loss-weight 0.01 \
+  --alignment-projection-dim 128 \
+  --alignment-temperature 0.2 \
+  --temporal-delta 2
+
+Text ablations
+--------------
+Real text:
+  --text-ablation real
+
+Shuffle endogenous text by time:
+  --text-ablation shuffle_endo
+
+Random text vectors:
+  --text-ablation random
+
+Important notes
+---------------
+The runners load an existing split by default. They do not regenerate the
+random mask unless --create-split is explicitly passed.
+
+The text modality is combined endo+exo. Endogenous text is gathered by time
+slice, and exogenous text is pooled or attended as a small segment memory.
+
+The projection layer is kept before fusion to prevent high-dimensional text
+vectors from dominating CoSTCo or GCN features.
