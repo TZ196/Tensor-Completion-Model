@@ -1,0 +1,720 @@
+MindText-CoSTCo / MindText-GCN-CoSTCo Design Plan
+=================================================
+
+1. Goal
+-------
+
+The current project already has three satellite path-traffic tensor completion
+models:
+
+1. CoSTCo
+   Input: source_id, destination_id, time_id
+   Output: traffic / KPI value X[i,j,t]
+
+2. TopoFeature-CoSTCo
+   Input: source_id, destination_id, time_id, topology-derived numeric features
+   Output: traffic / KPI value X[i,j,t]
+
+3. GCN-CoSTCo
+   Input: source_id, destination_id, time_id, dynamic adjacency tensor A_t
+   Output: traffic / KPI value X[i,j,t]
+
+The next goal is to introduce a text modality inspired by MindTS, but adapted
+to satellite path-traffic tensor completion rather than anomaly detection.
+
+The new model family will use a unified MindText naming scheme:
+
+4. MindText-CoSTCo-Base
+5. MindText-GCN-CoSTCo-Base
+6. MindText-CoSTCo
+7. MindText-GCN-CoSTCo
+
+In the current experimental setting, GCN-CoSTCo obtains a strong result, so
+the first text-modality validation will prioritize this backbone:
+
+rank = 50
+nc = 64
+node_dim = 64
+gcn_dim = 128
+lr = 0.001
+test NMAE = 0.1241
+test NRMSE = 0.0960
+
+
+2. Multimodal Definition
+------------------------
+
+For a tensor entry:
+
+X[i,j,t]
+
+the modalities are:
+
+1. Flow / KPI modality
+   The target path-traffic value and the latent CoSTCo representation learned
+   from source_id, destination_id, and time_id.
+
+2. Topology modality
+   The dynamic satellite adjacency matrix A_t with shape [N, N], used by GCN.
+
+3. Text modality
+   Time-slice and network-background text. This includes endogenous text and
+   exogenous text.
+
+
+2.1 Split Mask Lifecycle
+------------------------
+
+The text pipeline must be executed after the train/validation/test split is
+fixed.
+
+The current tensor completion split is a fixed global random transductive mask:
+
+1. All non-zero finite tensor entries (i,j,t) are collected globally.
+2. A random permutation is sampled once with a fixed seed.
+3. The first observed_ratio portion becomes train.
+4. Validation and test are sampled from the remaining unobserved entries.
+5. After split generation, the mask is fixed for all training epochs.
+
+This is not a per-time-slice mask. Per-time-slice train coverage can vary due
+to global random sampling. Therefore, the main endogenous text should use
+topology trends, not observed-traffic trends. Train-observed traffic statistics
+are only allowed in Endo-TopoFlow ablations.
+
+
+3. Endogenous Text
+------------------
+
+Endogenous text is generated from data that is allowed at training time. It
+describes each time slice t.
+
+Allowed sources:
+
+1. Dynamic topology A_t.
+2. Simulation configuration.
+3. Statistics from train observed entries only.
+4. Routing or link-state metadata that does not reveal validation/test target
+   traffic values.
+
+Forbidden sources:
+
+1. The full traffic matrix X[:,:,t].
+2. Validation or test target values.
+3. True full-slice mean/max/top-k traffic values.
+4. Any text generated from hidden entries.
+
+First-version granularity:
+
+One endogenous paragraph per time slice:
+
+endo_texts.json: 60 records, one record for each time index.
+
+Endogenous text should be generated in two versions for ablation:
+
+1. Endo-Topo
+   Uses topology and simulation statistics only.
+
+2. Endo-TopoFlow
+   Uses topology statistics plus train-observed traffic statistics.
+
+This split is important because reviewers may ask whether improvements come
+from text semantics or from train-observed traffic statistics being summarized
+into text. Both versions must avoid validation/test target values.
+
+Example content:
+
+At time 35, the LEO satellite network contains 120 satellites and 218
+inter-satellite links. The topology is connected, with an average node degree
+of 3.63 and an average shortest-path distance of 5.42 hops. Compared with the
+previous second, 4 links changed. Based only on observed training entries, the
+path traffic is sparse and shows a slightly increasing trend compared with the
+previous time slice.
+
+
+4. Exogenous Text
+-----------------
+
+Exogenous text is external background knowledge. It must not be generated from
+hidden validation/test target values.
+
+First-version segments:
+
+C1 simulation configuration
+C2 link capacity
+C3 routing mechanism
+C4 topology structure
+C5 bottleneck explanation
+C6 dynamic topology change mechanism
+C7 path-traffic tensor semantics
+
+These segments are static background texts. They are encoded once and reused
+for every time slice.
+
+
+5. Text Encoding
+----------------
+
+Large language models and text encoders should not run inside the training
+loop. Text is prepared offline.
+
+First implementation mode:
+
+text_generation_mode = template
+
+The template mode is deterministic, reproducible, and avoids LLM hallucination.
+An optional LLM rewrite mode can be added later as an ablation.
+
+Text preparation flow:
+
+time_stats_train_only.json
+endo_texts.json
+exo_text_segments.json
+        ->
+encode_satellite_texts.py
+        ->
+endo_text_embeddings.npy: [T, d_text]
+exo_text_embeddings.npy:  [M, d_text]
+
+First implementation should support a no-network encoder:
+
+1. TF-IDF + Truncated SVD style projection implemented with NumPy only, or
+2. deterministic hashing bag-of-words projection.
+
+If sentence-transformers or BERT embeddings are available later, they can be
+added as optional encoders.
+
+If local model weights are available, a compact sentence embedding model such
+as all-MiniLM-L6-v2 is preferred for final experiments. Hashing or TF-IDF
+embeddings are early no-network baselines.
+
+All text embeddings should be normalized before entering the model, and the
+normalization method must be recorded in result JSON files.
+
+
+6. Model Stages
+---------------
+
+Stage 0: Existing baselines
+
+Files already exist:
+
+costco_model.py
+run_sat_tensor_experiment.py
+gcn_costco_model.py
+run_gcn_sat_tensor_experiment.py
+
+Models:
+
+CoSTCo
+TopoFeature-CoSTCo
+GCN-CoSTCo
+
+
+Stage 1: Text concat baselines
+
+Purpose:
+
+Verify whether text embeddings are useful before adding cross-attention,
+gating, or contrastive alignment.
+
+Models:
+
+MindText-CoSTCo-Base
+MindText-GCN-CoSTCo-Base
+
+Fusion:
+
+z_flow[i,j,t] || z_text_proj[t] -> MLP -> traffic
+
+For GCN:
+
+z_flow[i,j,t] || z_graph[i,j,t] || z_text_proj[t] -> MLP -> traffic
+
+Text projection is required before concat:
+
+z_text_proj[t] = ReLU(MLP(z_text[t]))
+
+Recommended text projection dimension:
+
+64 or 128
+
+This prevents high-dimensional text embeddings, e.g. 384 or 768 dimensional
+sentence embeddings, from dominating lower-dimensional flow and graph features.
+
+Stage 1 should be split into simple text-source ablations:
+
+Base-A: endo only
+Base-B: exo only
+Base-C: endo + pooled exo concat or mean
+
+The first implementation target is Base-A endo only.
+
+
+Stage 2: Residual cross-view text attention
+
+Purpose:
+
+Fuse endogenous and exogenous text with endogenous text as the time-specific
+query and exogenous text as static background knowledge.
+
+Formula:
+
+Z_cross[t] = CrossAttention(Q=E_endo[t], K=E_exo, V=E_exo)
+Z_text[t] = LayerNorm(E_endo[t] + Z_cross[t])
+Z_text[t] = LayerNorm(Z_text[t] + FFN(Z_text[t]))
+
+
+Stage 3: Semantic gating
+
+Purpose:
+
+Filter noisy or irrelevant text dimensions.
+
+Formula:
+
+gate[t] = sigmoid(MLP(Z_text[t]))
+Z_con[t] = gate[t] * Z_text[t]
+
+This should be called Semantic Gating or Information Bottleneck Gate, not a
+full Content Condenser.
+
+
+Stage 4: Segment-level content condenser
+
+Purpose:
+
+Learn which exogenous text segments are useful for each time slice.
+
+Formula:
+
+alpha_t[m] = sigmoid(MLP([E_endo[t] || E_exo[m]]))
+E_exo_condensed[t,m] = alpha_t[m] * E_exo[m]
+
+This is the stronger version that can be called a segment-level Content
+Condenser.
+
+Engineering-stable version:
+
+The condenser should not directly use a raw sigmoid gate without safeguards.
+Otherwise, some segment weights may saturate close to zero early in training,
+which suppresses gradients and makes those segments difficult to recover.
+
+Recommended segment gate:
+
+raw_alpha_t[m] = sigmoid(score_t[m])
+alpha_t[m] = eps + (1 - 2 * eps) * raw_alpha_t[m]
+
+Recommended default:
+
+eps = 0.05
+
+This keeps each segment weight in [0.05, 0.95] before optional re-scaling.
+
+Optional mean re-scaling:
+
+alpha_t = alpha_t / (mean(alpha_t) + 1e-6)
+
+If this is used, alpha_t should be described as segment reweighting scores
+rather than strict Bernoulli probabilities.
+
+Recommended residual fusion:
+
+E_exo_condensed[t,m] = alpha_t[m] * E_exo[m]
+E_exo_final[t,m] = (1 - condenser_alpha) * E_exo[m]
+                 + condenser_alpha * E_exo_condensed[t,m]
+
+Recommended default:
+
+condenser_alpha = 0.5
+
+This allows all exogenous segments to keep contributing at the start of
+training while the model gradually learns useful segment filtering.
+
+If a MindTS-style bottleneck regularizer is used:
+
+L_CC = KL(Bernoulli(alpha) || Bernoulli(mu))
+
+Recommended default:
+
+mu = 0.5
+lambda_cc = 0.01
+
+During early experiments, lambda_cc can be set to 0 and enabled only after the
+prediction and text-fusion baselines are stable.
+
+Recommended order inside the text branch:
+
+E_endo[t], E_exo[1:M]
+        ->
+Fragment-level Condenser
+        ->
+E_exo_final[t,1:M]
+        ->
+Residual Cross-view Attention
+        ->
+Z_text[t]
+        ->
+Semantic Gating or FFN
+        ->
+Z_con[t]
+
+
+Stage 5: Temporal-neighborhood-aware alignment
+
+Purpose:
+
+Align flow/text and graph/text representations while avoiding false negatives
+from adjacent time slices.
+
+Positive:
+
+same time t
+
+Ignored negatives:
+
+|t - t'| <= delta, e.g. delta = 2
+
+Valid negatives:
+
+|t - t'| > delta
+
+Losses:
+
+MindText-CoSTCo:
+L = L_pred + lambda_ft * L_flow_text + lambda_cc * L_condenser
+
+MindText-GCN-CoSTCo:
+L = L_pred
+  + lambda_ft * L_flow_text
+  + lambda_gt * L_graph_text
+  + lambda_cc * L_condenser
+
+Initial weights:
+
+lambda_ft = 0.05
+lambda_gt = 0.05
+lambda_cc = 0.01
+delta = 2
+
+Implementation note:
+
+Temporal-neighborhood-aware InfoNCE should be implemented with a full batch
+similarity matrix and a temporal band mask, not with manual negative-sample
+loops.
+
+For the final alignment loss, aggregate OD-level representations by unique
+time_id before InfoNCE:
+
+z_flow_time[t] = mean pooling of z_flow[i,j,t] over batch samples with time_id=t
+z_text_time[t] = Z_con[t]
+
+For GCN graph-text alignment, prefer a graph-level representation:
+
+z_graph_time[t] = mean_pool(H_t)
+
+This is cleaner than aligning every OD pair with the same time-level text.
+
+For two projected time-level modalities:
+
+z_a: [B_time, d]
+z_b: [B_time, d]
+time_ids: [B_time]
+
+Compute:
+
+logits_ab = normalize(z_a) @ normalize(z_b).T / temperature
+logits_ba = normalize(z_b) @ normalize(z_a).T / temperature
+
+Then construct:
+
+time_diff[i,j] = |time_ids[i] - time_ids[j]|
+near_mask = (time_diff <= delta) and (i != j)
+
+The diagonal remains the positive pair. Off-diagonal near-time pairs are
+ignored as false negatives by setting their logits to a very small value:
+
+logits = masked_fill(logits, near_mask, -1e9)
+
+Then use standard sparse cross-entropy labels:
+
+labels = [0, 1, ..., B-1]
+
+Use symmetric InfoNCE:
+
+L_ab = CE(logits_ab, labels)
+L_ba = CE(logits_ba, labels)
+L = 0.5 * (L_ab + L_ba)
+
+Recommended hyperparameters:
+
+contrastive_temperature = 0.1
+delta = 2
+projection_dim = 64 or 128
+
+The contrastive batch should contain mixed time indices. If the number of
+unique time slices is too small, a temporal memory queue can be introduced
+later to provide more distant negative samples. For early experiments, log:
+
+unique_time_count_per_batch
+valid_negative_count
+
+
+7. File Layout
+--------------
+
+All new files should live under:
+
+CostCO/multimodal_text/
+
+Planned files:
+
+build_satellite_texts.py
+    Generate train-only time statistics, endogenous texts, and exogenous text
+    segments.
+
+encode_satellite_texts.py
+    Encode endo/exo texts into .npy embeddings.
+
+text_costco_model.py
+    MindText-CoSTCo-Base and MindText-CoSTCo model definitions.
+
+run_text_sat_tensor_experiment.py
+    Run CoSTCo + text experiments.
+
+gcn_text_costco_model.py
+    MindText-GCN-CoSTCo-Base and MindText-GCN-CoSTCo model definitions.
+
+run_gcn_text_sat_tensor_experiment.py
+    Run GCN-CoSTCo + text experiments.
+
+text_data/
+    time_stats_train_only.json
+    endo_texts.json
+    exo_text_segments.json
+    endo_text_embeddings.npy
+    exo_text_embeddings.npy
+
+results/
+    Result JSON files for text experiments.
+
+
+8. Required Ablations
+---------------------
+
+These ablations are necessary to prove that text semantics help:
+
+1. no text
+   Existing GCN-CoSTCo best result.
+
+2. real text
+   Endogenous + exogenous text generated from allowed information.
+
+3. random text embedding
+   Same embedding shape, random values. Tests whether gains come only from
+   extra parameters.
+
+4. shuffled time-text pairs
+   Use real text embeddings but shuffle time indices. Tests whether temporal
+   alignment matters.
+
+5. endogenous only
+   Tests time-slice status text.
+
+6. exogenous only
+   Tests static network background text.
+
+7. endogenous + exogenous concat
+   Simple text fusion baseline.
+
+8. residual cross-view attention
+   Tests whether endogenous/exogenous interaction helps.
+
+9. semantic gating / content condenser
+   Tests whether text filtering helps.
+
+Additional engineering ablations:
+
+10. without temporal band mask vs with temporal band mask
+    Tests whether false-negative masking for neighboring time slices matters.
+
+11. without gate smoothing vs with gate smoothing
+    Tests whether epsilon-smoothed segment gates improve stability.
+
+12. without condenser residual vs with condenser residual
+    Tests whether residual access to all exogenous segments prevents early
+    segment suppression.
+
+
+9. First Implementation Order
+-----------------------------
+
+Step 1:
+
+Create build_satellite_texts.py.
+It should generate:
+
+text_data/time_stats_train_only.json
+text_data/endo_texts.json
+text_data/exo_text_segments.json
+
+For the main DeepSeek-based text pipeline, use:
+
+run_text_preparation_pipeline.py
+
+It reads:
+
+experiment_description.md
+text_data/time_stats_train_only.json
+deepseek.env
+
+and writes:
+
+text_data/endo_texts.json
+text_data/exo_text_segments.json
+
+The default endogenous source should be Endo-Topo:
+
+--endo-source topo
+
+Endo-TopoFlow can be used only as an ablation:
+
+--endo-source topoflow
+
+DeepSeek must use only the provided configuration text and structured
+time-slice statistics. It must not infer missing facts.
+
+Recommended strict pipeline command:
+
+python run_text_preparation_pipeline.py \
+  --stage all \
+  --tensor-path ../sat_path_bytes_mb_tensor.npy \
+  --topology-path ../sat_connectivity_tensor_dynamic_60s_1000ms.npz \
+  --split-path ../splits/random_observed10_val10_seed_3.npz \
+  --env-path deepseek.env \
+  --config-path experiment_description.md \
+  --endo-source topo \
+  --embedding-dim 256
+
+If the split does not exist yet, create it explicitly:
+
+python run_text_preparation_pipeline.py \
+  --stage stats \
+  --tensor-path ../sat_path_bytes_mb_tensor.npy \
+  --topology-path ../sat_connectivity_tensor_dynamic_60s_1000ms.npz \
+  --split-path ../splits/random_observed10_val10_seed_3.npz \
+  --create-split
+
+Never let text generation silently create a new split. The split must be a
+deliberate pipeline artifact.
+
+Step 2:
+
+Create encode_satellite_texts.py.
+It should generate:
+
+text_data/endo_text_embeddings.npy
+text_data/exo_text_embeddings.npy
+
+Step 3:
+
+Create MindText-GCN-CoSTCo-Base first, because GCN-CoSTCo is a strong current
+base model under the current experimental setting.
+
+Step 4:
+
+Run:
+
+GCN-CoSTCo no text
+MindText-GCN-CoSTCo-Base real endo text only
+MindText-GCN-CoSTCo-Base shuffled endo text
+MindText-GCN-CoSTCo-Base random text
+
+Step 5:
+
+Only if real endo text beats shuffled/random text, add exogenous text:
+
+exo only
+endo + exo mean/concat
+endo + exo residual cross-view attention
+
+Only after that, implement semantic gating, segment-level content condenser,
+and temporal-neighborhood-aware alignment.
+
+
+10. Pre-Training Text Diagnostics
+---------------------------------
+
+Before training text models, run a lightweight text embedding diagnostic:
+
+1. cosine similarity matrix over 60 endogenous text embeddings
+2. adjacent-time similarity vs distant-time similarity
+3. random/shuffled embedding similarity distributions
+4. optional PCA visualization
+
+If real endogenous embeddings are almost identical across all 60 time slices,
+the text modality is unlikely to help unless the text contains more fine-grained
+train-only dynamic statistics.
+
+
+11. Result JSON Requirements
+----------------------------
+
+Every text experiment result JSON should record:
+
+model_family
+text_enabled
+text_mode
+endo_source
+exo_segment_count
+text_encoder
+text_embedding_dim
+text_embedding_normalization
+text_projection_dim
+cross_view_attention
+attention_residual
+semantic_gating
+segment_condenser
+gate_eps
+condenser_alpha
+contrastive_enabled
+contrastive_temperature
+temporal_delta
+projection_dim
+lambda_ft
+lambda_gt
+lambda_cc
+
+
+12. Recommended First Experimental Command
+------------------------------------------
+
+After implementation, the first real text experiment should use the current
+best GCN configuration:
+
+rank = 50
+nc = 64
+node_dim = 64
+gcn_dim = 128
+lr = 0.001
+epochs = 200
+batch_size = 256
+missing_rate = 0.9
+seed = 3
+
+The first result should be compared against:
+
+GCN-CoSTCo best:
+NMAE = 0.1241
+NRMSE = 0.0960
+
+
+13. Summary
+-----------
+
+The practical route is:
+
+Do not jump directly to the full MindText-GCN-CoSTCo. First build a clean
+offline text pipeline and a concat baseline. Then use strict random/shuffled
+text ablations to prove whether text semantics help. After that, add residual
+cross-view attention, semantic gating, segment-level content condenser, and
+temporal-neighborhood-aware alignment.

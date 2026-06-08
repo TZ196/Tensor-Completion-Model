@@ -15,6 +15,12 @@ env/
 ENV/
 *.egg-info/
 
+# Local API credentials
+.env
+*.env
+!*.env.example
+CostCO/multimodal_text/deepseek.env
+
 # Local backup kept outside the remote repository
 CostCO_git_backup/
 
