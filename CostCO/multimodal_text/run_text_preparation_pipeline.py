@@ -88,7 +88,11 @@ def main():
     if split_path is None:
         split_path = default_split_path(observed_ratio, args.val_ratio, args.seed)
 
-    stats_path = os.path.join(args.output_dir, "time_stats_train_only.json")
+    full_stats_path = os.path.join(args.output_dir, "time_stats_train_only.json")
+    topo_stats_path = os.path.join(args.output_dir, "time_stats_topo_only.json")
+    stats_path = (
+        topo_stats_path if args.endo_source == "topo" else full_stats_path
+    )
     endo_path = os.path.join(args.output_dir, "endo_texts.json")
     exo_path = os.path.join(args.output_dir, "exo_text_segments.json")
 

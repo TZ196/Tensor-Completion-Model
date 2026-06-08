@@ -321,6 +321,27 @@ def build_time_statistics(shape, topology, train_indices, train_values):
     return stats
 
 
+def strip_topology_only_stats(stats):
+    keys = [
+        "time_index",
+        "num_satellites",
+        "edge_count_undirected",
+        "edge_count_directed_entries",
+        "avg_degree",
+        "min_degree",
+        "max_degree",
+        "is_connected",
+        "avg_shortest_path_hops",
+        "diameter_hops",
+        "changed_adjacency_entries_from_prev",
+        "changed_edges_from_prev",
+    ]
+    return [
+        {key: item[key] for key in keys}
+        for item in stats
+    ]
+
+
 def render_endogenous_text(stats, mode):
     texts = []
     for item in stats:
@@ -594,6 +615,24 @@ def main():
                 ],
             },
             "time_statistics": stats,
+        },
+    )
+    write_json(
+        os.path.join(output_dir, "time_stats_topo_only.json"),
+        {
+            "metadata": {
+                "tensor_path": args.tensor_path,
+                "topology_path": args.topology_path,
+                "split_path": args.split_path,
+                "mask_type": "fixed_global_random_transductive_mask",
+                "stats_source": "topology_only",
+                "num_time_slices": int(shape[2]),
+                "note": (
+                    "Compact topology-only statistics for DeepSeek "
+                    "Endo-Topo generation. No traffic values are included."
+                ),
+            },
+            "time_statistics": strip_topology_only_stats(stats),
         },
     )
     if args.write_template_endo:
