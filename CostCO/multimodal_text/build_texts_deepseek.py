@@ -170,21 +170,14 @@ def build_endogenous_prompt(stats, endo_source, expected_count=None):
         "satellite path-traffic tensor completion model. You must use only the "
         "structured statistics provided."
     )
-    if endo_source == "topo":
-        allowed = (
-            "Use topology fields only. Do not mention observed traffic counts, "
-            "traffic values, traffic trends, source IDs, or destination IDs."
-        )
-        source_name = "topology_statistics_only"
-    elif endo_source == "topoflow":
-        allowed = (
-            "Use topology fields and train-observed traffic statistics only. "
-            "Do not mention validation/test values or full hidden traffic "
-            "matrix statistics."
-        )
-        source_name = "topology_and_train_observed_statistics_only"
-    else:
+    if endo_source != "topo":
         raise ValueError("Unsupported endo source: %s" % endo_source)
+    allowed = (
+        "Use topology fields only. Do not mention traffic counts, traffic "
+        "values, traffic trends, source IDs, destination IDs, training masks, "
+        "validation masks, test masks, or random masking."
+    )
+    source_name = "topology_statistics_only"
 
     slim_stats = []
     for item in stats:
@@ -200,24 +193,6 @@ def build_endogenous_prompt(stats, endo_source, expected_count=None):
             "diameter_hops": item["diameter_hops"],
             "changed_edges_from_prev": item["changed_edges_from_prev"],
         }
-        if endo_source == "topoflow":
-            base.update({
-                "observed_train_nonzero_count": item[
-                    "observed_train_nonzero_count"
-                ],
-                "observed_train_ratio_within_slice": item[
-                    "observed_train_ratio_within_slice"
-                ],
-                "observed_train_sparsity": item[
-                    "observed_train_sparsity"
-                ],
-                "observed_train_mean_mb": item["observed_train_mean_mb"],
-                "observed_train_median_mb": item[
-                    "observed_train_median_mb"
-                ],
-                "observed_train_std_mb": item["observed_train_std_mb"],
-                "observed_train_trend": item["observed_train_trend"],
-            })
         slim_stats.append(base)
 
     if expected_count is None:
@@ -302,10 +277,7 @@ def merge_endogenous_chunks(chunks, endo_source, env, stats_path):
     texts = sorted(texts, key=lambda item: int(item["time_index"]))
     return {
         "metadata": {
-            "source": (
-                "topology_statistics_only" if endo_source == "topo"
-                else "topology_and_train_observed_statistics_only"
-            ),
+            "source": "topology_statistics_only",
             "text_generation_mode": "deepseek",
             "num_time_slices": len(texts),
             "stats_path": stats_path,
@@ -379,11 +351,11 @@ def parse_args():
     )
     parser.add_argument(
         "--stats-path",
-        default="text_data/time_stats_train_only.json",
+        default="text_data/time_stats_topo_only.json",
     )
     parser.add_argument(
         "--endo-source",
-        choices=["topo", "topoflow"],
+        choices=["topo"],
         default="topo",
     )
     parser.add_argument(

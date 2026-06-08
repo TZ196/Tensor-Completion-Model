@@ -13,33 +13,17 @@ def run_command(command):
     subprocess.check_call(command, cwd=SCRIPT_DIR)
 
 
-def default_split_path(observed_ratio, val_ratio, seed):
-    return os.path.join(
-        PROJECT_DIR,
-        "splits",
-        "random_observed%d_val%d_seed_%d.npz" % (
-            int(round(observed_ratio * 100)),
-            int(round(val_ratio * 100)),
-            seed,
-        ),
-    )
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Run the multimodal text preparation pipeline in a strict order: "
-            "split -> train-only stats -> DeepSeek texts -> embeddings."
+            "topology-only stats -> DeepSeek texts -> embeddings."
         )
     )
     parser.add_argument(
         "--stage",
         choices=["stats", "deepseek", "encode", "all"],
         default="all",
-    )
-    parser.add_argument(
-        "--tensor-path",
-        default=os.path.join(PROJECT_DIR, "sat_path_bytes_mb_tensor.npy"),
     )
     parser.add_argument(
         "--topology-path",
@@ -49,21 +33,6 @@ def parse_args():
         ),
     )
     parser.add_argument("--output-dir", default=os.path.join(SCRIPT_DIR, "text_data"))
-    parser.add_argument("--split-path", default=None)
-    parser.add_argument("--missing-rate", type=float, default=0.9)
-    parser.add_argument("--observed-ratio", type=float, default=None)
-    parser.add_argument("--val-ratio", type=float, default=0.1)
-    parser.add_argument("--seed", type=int, default=3)
-    parser.add_argument(
-        "--create-split",
-        action="store_true",
-        help="Create the fixed global random split explicitly if needed.",
-    )
-    parser.add_argument(
-        "--overwrite-split",
-        action="store_true",
-        help="Recreate split even if it already exists.",
-    )
     parser.add_argument("--env-path", default=os.path.join(SCRIPT_DIR, "deepseek.env"))
     parser.add_argument(
         "--config-path",
@@ -71,7 +40,7 @@ def parse_args():
     )
     parser.add_argument(
         "--endo-source",
-        choices=["topo", "topoflow"],
+        choices=["topo"],
         default="topo",
     )
     parser.add_argument("--embedding-dim", type=int, default=256)
@@ -81,18 +50,8 @@ def parse_args():
 
 def main():
     args = parse_args()
-    observed_ratio = args.observed_ratio
-    if observed_ratio is None:
-        observed_ratio = 1.0 - args.missing_rate
-    split_path = args.split_path
-    if split_path is None:
-        split_path = default_split_path(observed_ratio, args.val_ratio, args.seed)
-
-    full_stats_path = os.path.join(args.output_dir, "time_stats_train_only.json")
     topo_stats_path = os.path.join(args.output_dir, "time_stats_topo_only.json")
-    stats_path = (
-        topo_stats_path if args.endo_source == "topo" else full_stats_path
-    )
+    stats_path = topo_stats_path
     endo_path = os.path.join(args.output_dir, "endo_texts.json")
     exo_path = os.path.join(args.output_dir, "exo_text_segments.json")
 
@@ -100,27 +59,11 @@ def main():
         command = [
             sys.executable,
             "build_satellite_texts.py",
-            "--tensor-path",
-            args.tensor_path,
             "--topology-path",
             args.topology_path,
             "--output-dir",
             args.output_dir,
-            "--split-path",
-            split_path,
-            "--val-ratio",
-            str(args.val_ratio),
-            "--seed",
-            str(args.seed),
         ]
-        if args.observed_ratio is not None:
-            command.extend(["--observed-ratio", str(args.observed_ratio)])
-        else:
-            command.extend(["--missing-rate", str(args.missing_rate)])
-        if args.create_split:
-            command.append("--create-split")
-        if args.overwrite_split:
-            command.append("--overwrite-split")
         run_command(command)
 
     if args.stage in ("deepseek", "all"):
@@ -172,7 +115,7 @@ def main():
         run_command(command)
 
     print("Pipeline stage completed:", args.stage)
-    print("Split path:", split_path)
+    print("Stats path:", stats_path)
     print("Text data dir:", args.output_dir)
 
 

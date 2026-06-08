@@ -18,9 +18,28 @@ Run Stage 2/3 from:
   cd CostCO/multimodal_text/models/gcn_costco_text
 
 Prerequisite:
-  text_data/endo_text_embeddings.npy
-  text_data/exo_text_embeddings.npy
-  ../splits/random_observed10_val10_seed_3.npz
+  CostCO/multimodal_text/text_data/endo_text_embeddings.npy
+  CostCO/multimodal_text/text_data/exo_text_embeddings.npy
+  CostCO/splits/random_observed10_val10_seed_3.npz
+
+Text preparation
+----------------
+Run from:
+  cd CostCO/multimodal_text
+
+python run_text_preparation_pipeline.py \
+  --stage all \
+  --topology-path ../sat_connectivity_tensor_dynamic_60s_1000ms.npz \
+  --env-path deepseek.env \
+  --config-path experiment_description.md \
+  --embedding-dim 256
+
+The endogenous text preparation uses topology-only statistics from:
+  text_data/time_stats_topo_only.json
+
+It does not read the traffic tensor, does not create a random mask, and does
+not use train/validation/test split information. Random masking is used only
+by the model training runners.
 
 Stage 1: CoSTCo + text concat baseline
 --------------------------------------
@@ -94,7 +113,8 @@ The runners load an existing split by default. They do not regenerate the
 random mask unless --create-split is explicitly passed.
 
 The text modality is combined endo+exo. Endogenous text is gathered by time
-slice, and exogenous text is pooled or attended as a small segment memory.
+slice from topology-only text, and exogenous text is pooled or attended as a
+small segment memory.
 
 The projection layer is kept before fusion to prevent high-dimensional text
 vectors from dominating CoSTCo or GCN features.
