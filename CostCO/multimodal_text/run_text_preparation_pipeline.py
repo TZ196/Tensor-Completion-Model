@@ -75,6 +75,7 @@ def parse_args():
         default="topo",
     )
     parser.add_argument("--embedding-dim", type=int, default=256)
+    parser.add_argument("--endo-chunk-size", type=int, default=10)
     return parser.parse_args()
 
 
@@ -136,6 +137,8 @@ def main():
             stats_path,
             "--endo-source",
             args.endo_source,
+            "--endo-chunk-size",
+            str(args.endo_chunk_size),
             "--exo-output-path",
             exo_path,
             "--endo-output-path",

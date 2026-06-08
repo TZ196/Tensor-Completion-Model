@@ -164,7 +164,7 @@ Configuration text:
     return system_prompt, user_prompt
 
 
-def build_endogenous_prompt(stats, endo_source):
+def build_endogenous_prompt(stats, endo_source, expected_count=None):
     system_prompt = (
         "You generate leakage-safe endogenous time-slice descriptions for a "
         "satellite path-traffic tensor completion model. You must use only the "
@@ -220,6 +220,9 @@ def build_endogenous_prompt(stats, endo_source):
             })
         slim_stats.append(base)
 
+    if expected_count is None:
+        expected_count = len(slim_stats)
+
     user_prompt = """
 Task:
 Generate one endogenous English paragraph for each time slice of a satellite
@@ -237,7 +240,7 @@ Required JSON format:
   "metadata": {
     "source": "%s",
     "text_generation_mode": "deepseek",
-    "num_time_slices": 60
+    "num_time_slices": %d
   },
   "texts": [
     {
@@ -253,6 +256,7 @@ Structured statistics:
 """ % (
         allowed,
         source_name,
+        expected_count,
         endo_source,
         json.dumps(slim_stats, ensure_ascii=False, indent=2),
     )
@@ -281,28 +285,80 @@ def generate_exogenous(args, env):
     print("Saved DeepSeek exogenous text:", args.exo_output_path)
 
 
+def save_raw_response(output_path, prefix, response):
+    directory = os.path.dirname(output_path)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory)
+    raw_path = os.path.join(directory, prefix)
+    with open(raw_path, "w", encoding="utf-8") as f:
+        f.write(response)
+    return raw_path
+
+
+def merge_endogenous_chunks(chunks, endo_source, env, stats_path):
+    texts = []
+    for chunk in chunks:
+        texts.extend(chunk["texts"])
+    texts = sorted(texts, key=lambda item: int(item["time_index"]))
+    return {
+        "metadata": {
+            "source": (
+                "topology_statistics_only" if endo_source == "topo"
+                else "topology_and_train_observed_statistics_only"
+            ),
+            "text_generation_mode": "deepseek",
+            "num_time_slices": len(texts),
+            "stats_path": stats_path,
+            "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+            "chunked_generation": True,
+        },
+        "texts": texts,
+    }
+
+
 def generate_endogenous(args, env):
     stats_data = read_json(args.stats_path)
     stats = stats_data["time_statistics"]
-    system_prompt, user_prompt = build_endogenous_prompt(
-        stats,
+    chunks = []
+    chunk_size = max(1, args.endo_chunk_size)
+    for start in range(0, len(stats), chunk_size):
+        chunk_stats = stats[start:start + chunk_size]
+        system_prompt, user_prompt = build_endogenous_prompt(
+            chunk_stats,
+            args.endo_source,
+            expected_count=len(stats),
+        )
+        response = deepseek_chat(
+            env,
+            system_prompt,
+            user_prompt,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+        )
+        try:
+            chunk = extract_json(response)
+        except json.JSONDecodeError:
+            raw_path = save_raw_response(
+                args.endo_output_path,
+                "endo_deepseek_bad_response_%03d_%03d.txt" %
+                (start, start + len(chunk_stats) - 1),
+                response,
+            )
+            raise ValueError(
+                "DeepSeek returned invalid JSON for endogenous time slices "
+                "%d-%d. Raw response saved to %s" %
+                (start, start + len(chunk_stats) - 1, raw_path)
+            )
+        if "texts" not in chunk:
+            raise ValueError("Endogenous DeepSeek JSON must contain texts")
+        chunks.append(chunk)
+
+    result = merge_endogenous_chunks(
+        chunks,
         args.endo_source,
-    )
-    response = deepseek_chat(
         env,
-        system_prompt,
-        user_prompt,
-        temperature=args.temperature,
-        max_tokens=args.max_tokens,
+        args.stats_path,
     )
-    result = extract_json(response)
-    if "texts" not in result:
-        raise ValueError("Endogenous DeepSeek JSON must contain texts")
-    result.setdefault("metadata", {})
-    result["metadata"].update({
-        "stats_path": args.stats_path,
-        "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-    })
     write_json(args.endo_output_path, result)
     print("Saved DeepSeek endogenous text:", args.endo_output_path)
 
@@ -340,6 +396,12 @@ def parse_args():
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument(
+        "--endo-chunk-size",
+        type=int,
+        default=10,
+        help="Generate endogenous text in chunks to keep JSON valid.",
+    )
     return parser.parse_args()
 
 
