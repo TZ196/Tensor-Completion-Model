@@ -73,7 +73,7 @@ def deepseek_chat(env, system_prompt, user_prompt, temperature=0.0,
         )
 
     base_url = env.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-    model = env.get("DEEPSEEK_MODEL", "deepseek-chat")
+    model = env.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": model,
@@ -275,7 +275,7 @@ def generate_exogenous(args, env):
     result.setdefault("metadata", {})
     result["metadata"].update({
         "source_config_path": args.config_path,
-        "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
     })
     write_json(args.exo_output_path, result)
     print("Saved DeepSeek exogenous text:", args.exo_output_path)
@@ -301,7 +301,7 @@ def generate_endogenous(args, env):
     result.setdefault("metadata", {})
     result["metadata"].update({
         "stats_path": args.stats_path,
-        "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
     })
     write_json(args.endo_output_path, result)
     print("Saved DeepSeek endogenous text:", args.endo_output_path)
