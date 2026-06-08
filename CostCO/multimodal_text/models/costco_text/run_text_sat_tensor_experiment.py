@@ -7,9 +7,14 @@ from pprint import pprint
 from tensorflow import keras as k
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+MODELS_DIR = os.path.dirname(SCRIPT_DIR)
+MULTIMODAL_DIR = os.path.dirname(MODELS_DIR)
+PROJECT_DIR = os.path.dirname(MULTIMODAL_DIR)
+SHARED_DIR = os.path.join(MULTIMODAL_DIR, "shared")
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
+if SHARED_DIR not in sys.path:
+    sys.path.insert(0, SHARED_DIR)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
@@ -19,6 +24,7 @@ from experiment_utils import (  # noqa: E402
     format_lr,
     load_embeddings,
     load_existing_split,
+    resolve_path,
     stage_flags,
 )
 from run_sat_tensor_experiment import (  # noqa: E402
@@ -38,14 +44,21 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run staged MindText-CoSTCo tensor completion."
     )
-    parser.add_argument("--tensor-path", default="../sat_path_bytes_mb_tensor.npy")
+    parser.add_argument(
+        "--tensor-path",
+        default=os.path.join(PROJECT_DIR, "sat_path_bytes_mb_tensor.npy"),
+    )
     parser.add_argument(
         "--endo-embedding-path",
-        default="text_data/endo_text_embeddings.npy",
+        default=os.path.join(
+            MULTIMODAL_DIR, "text_data", "endo_text_embeddings.npy"
+        ),
     )
     parser.add_argument(
         "--exo-embedding-path",
-        default="text_data/exo_text_embeddings.npy",
+        default=os.path.join(
+            MULTIMODAL_DIR, "text_data", "exo_text_embeddings.npy"
+        ),
     )
     parser.add_argument("--split-path", default=None)
     parser.add_argument("--create-split", action="store_true")
@@ -121,8 +134,16 @@ def main():
 
     if args.split_path is None:
         args.split_path = default_split_path(
-            observed_ratio, args.val_ratio, args.seed
+            observed_ratio, args.val_ratio, args.seed, project_dir=PROJECT_DIR
         )
+    args.tensor_path = resolve_path(args.tensor_path, SCRIPT_DIR)
+    args.split_path = resolve_path(args.split_path, SCRIPT_DIR)
+    args.endo_embedding_path = resolve_path(
+        args.endo_embedding_path, SCRIPT_DIR
+    )
+    args.exo_embedding_path = resolve_path(
+        args.exo_embedding_path, SCRIPT_DIR
+    )
     if args.metrics_path is None:
         args.metrics_path = default_metrics_path(args, observed_ratio)
 

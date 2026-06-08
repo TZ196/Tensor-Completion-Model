@@ -5,9 +5,14 @@ import numpy as np
 from tensorflow import keras as k
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+MODELS_DIR = os.path.dirname(SCRIPT_DIR)
+MULTIMODAL_DIR = os.path.dirname(MODELS_DIR)
+PROJECT_DIR = os.path.dirname(MULTIMODAL_DIR)
+SHARED_DIR = os.path.join(MULTIMODAL_DIR, "shared")
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
+if SHARED_DIR not in sys.path:
+    sys.path.insert(0, SHARED_DIR)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 

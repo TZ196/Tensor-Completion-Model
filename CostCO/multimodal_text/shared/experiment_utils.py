@@ -60,8 +60,8 @@ def load_existing_split(split_path):
     )
 
 
-def default_split_path(observed_ratio, val_ratio, seed):
-    return os.path.join(
+def default_split_path(observed_ratio, val_ratio, seed, project_dir=None):
+    path = os.path.join(
         "..",
         "splits",
         "random_observed%d_val%d_seed_%d.npz" % (
@@ -70,6 +70,23 @@ def default_split_path(observed_ratio, val_ratio, seed):
             seed,
         ),
     )
+    if project_dir is not None:
+        path = os.path.join(
+            project_dir,
+            "splits",
+            "random_observed%d_val%d_seed_%d.npz" % (
+                int(round(observed_ratio * 100)),
+                int(round(val_ratio * 100)),
+                seed,
+            ),
+        )
+    return path
+
+
+def resolve_path(path, base_dir):
+    if path is None or os.path.isabs(path):
+        return path
+    return os.path.normpath(os.path.join(base_dir, path))
 
 
 def format_lr(lr):

@@ -1,8 +1,21 @@
 MindText CoSTCo staged experiment commands
 =========================================
 
-Run from:
-  cd CostCO/multimodal_text
+Directory layout:
+  CostCO/multimodal_text/shared
+    Common multimodal layers and experiment utilities.
+
+  CostCO/multimodal_text/models/costco_text
+    CoSTCo + text model and runner.
+
+  CostCO/multimodal_text/models/gcn_costco_text
+    GCN-CoSTCo + text model and runner.
+
+Run Stage 1 from:
+  cd CostCO/multimodal_text/models/costco_text
+
+Run Stage 2/3 from:
+  cd CostCO/multimodal_text/models/gcn_costco_text
 
 Prerequisite:
   text_data/endo_text_embeddings.npy
@@ -12,10 +25,6 @@ Prerequisite:
 Stage 1: CoSTCo + text concat baseline
 --------------------------------------
 python run_text_sat_tensor_experiment.py \
-  --tensor-path ../sat_path_bytes_mb_tensor.npy \
-  --split-path ../splits/random_observed10_val10_seed_3.npz \
-  --endo-embedding-path text_data/endo_text_embeddings.npy \
-  --exo-embedding-path text_data/exo_text_embeddings.npy \
   --rank 50 \
   --nc 64 \
   --text-stage concat \
@@ -29,11 +38,6 @@ python run_text_sat_tensor_experiment.py \
 Stage 2: GCN-CoSTCo + text concat baseline
 ------------------------------------------
 python run_gcn_text_sat_tensor_experiment.py \
-  --tensor-path ../sat_path_bytes_mb_tensor.npy \
-  --topology-path ../sat_connectivity_tensor_dynamic_60s_1000ms.npz \
-  --split-path ../splits/random_observed10_val10_seed_3.npz \
-  --endo-embedding-path text_data/endo_text_embeddings.npy \
-  --exo-embedding-path text_data/exo_text_embeddings.npy \
   --rank 50 \
   --nc 64 \
   --node-dim 64 \
