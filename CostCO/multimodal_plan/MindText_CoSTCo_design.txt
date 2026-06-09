@@ -157,11 +157,13 @@ The embedding encoder is a separate component.
 
 Current implementation:
 
-encode_satellite_texts.py uses a deterministic hashing bag-of-words baseline.
+encode_satellite_texts.py uses SentenceTransformer with:
 
-Current embedding dimension:
+sentence-transformers/all-MiniLM-L6-v2
 
-embedding_dim = 256
+Typical embedding dimension:
+
+embedding_dim = 384
 
 The model then projects text embeddings before fusion:
 
@@ -169,18 +171,16 @@ text_projection_dim = 64 or 128
 
 This means:
 
-offline encoder: text -> 256-dimensional embedding
-model projection: 256 -> 64/128-dimensional trainable representation
+offline encoder: text -> 384-dimensional embedding
+model projection: 384 -> 64/128-dimensional trainable representation
 
-If local semantic encoder weights are available, a sentence embedding model
-such as all-MiniLM-L6-v2 is preferred for final semantic experiments. Hashing
-BoW is a reproducible no-network baseline and should not be used alone to
-conclude that text semantics are ineffective.
+all-MiniLM-L6-v2 is the default text embedding encoder for semantic
+experiments.
 
 Normalization:
 
-The current hashing encoder writes normalized embeddings and records metadata.
-For sentence-transformer embeddings, use L2 normalization before saving.
+SentenceTransformer embeddings are L2-normalized before saving unless
+--no-normalize is explicitly passed.
 
 
 7. Text Branch Execution Order

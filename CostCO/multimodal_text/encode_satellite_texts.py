@@ -1,13 +1,8 @@
 import argparse
-import hashlib
 import json
 import os
-import re
 
 import numpy as np
-
-
-TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
 
 
 def load_json(path):
@@ -15,35 +10,31 @@ def load_json(path):
         return json.load(f)
 
 
-def tokenize(text):
-    return TOKEN_RE.findall(text.lower())
+def l2_normalize(matrix):
+    norm = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix / np.maximum(norm, 1e-8)
 
 
-def stable_hash(token):
-    digest = hashlib.md5(token.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16)
+def encode_sentence_transformer(texts, model_name, batch_size, normalize):
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise ImportError(
+            "sentence-transformers is required for text embedding. "
+            "Install it with: pip install -U sentence-transformers"
+        ) from exc
 
-
-def encode_text(text, dim):
-    vector = np.zeros((dim,), dtype="float32")
-    tokens = tokenize(text)
-    if not tokens:
-        return vector
-
-    for token in tokens:
-        hashed = stable_hash(token)
-        index = hashed % dim
-        sign = 1.0 if ((hashed >> 8) & 1) else -1.0
-        vector[index] += sign
-
-    norm = np.linalg.norm(vector)
-    if norm > 0.0:
-        vector = vector / norm
-    return vector.astype("float32")
-
-
-def encode_texts(texts, dim):
-    return np.stack([encode_text(text, dim) for text in texts], axis=0)
+    model = SentenceTransformer(model_name)
+    embeddings = model.encode(
+        texts,
+        batch_size=batch_size,
+        convert_to_numpy=True,
+        normalize_embeddings=normalize,
+        show_progress_bar=True,
+    ).astype("float32")
+    if normalize:
+        embeddings = l2_normalize(embeddings).astype("float32")
+    return embeddings
 
 
 def write_metadata(path, metadata):
@@ -56,10 +47,22 @@ def write_metadata(path, metadata):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Encode satellite endogenous/exogenous texts offline."
+        description=(
+            "Encode satellite endogenous/exogenous texts with "
+            "SentenceTransformer all-MiniLM-L6-v2."
+        )
     )
     parser.add_argument("--text-dir", default="text_data")
-    parser.add_argument("--dim", type=int, default=256)
+    parser.add_argument(
+        "--model-name",
+        default="sentence-transformers/all-MiniLM-L6-v2",
+    )
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--no-normalize",
+        action="store_true",
+        help="Disable L2 normalization of text embeddings.",
+    )
     return parser.parse_args()
 
 
@@ -78,8 +81,19 @@ def main():
     endo_texts = [item["text"] for item in endo_records]
     exo_texts = [item["text"] for item in exo_records]
 
-    endo_embeddings = encode_texts(endo_texts, args.dim)
-    exo_embeddings = encode_texts(exo_texts, args.dim)
+    normalize = not args.no_normalize
+    endo_embeddings = encode_sentence_transformer(
+        endo_texts,
+        args.model_name,
+        args.batch_size,
+        normalize,
+    )
+    exo_embeddings = encode_sentence_transformer(
+        exo_texts,
+        args.model_name,
+        args.batch_size,
+        normalize,
+    )
 
     np.save(
         os.path.join(args.text_dir, "endo_text_embeddings.npy"),
@@ -92,16 +106,18 @@ def main():
     write_metadata(
         os.path.join(args.text_dir, "text_embedding_metadata.json"),
         {
-            "encoder_type": "deterministic_hashing_bag_of_words",
-            "encoder": "deterministic_hashing_bag_of_words",
-            "embedding_dim": args.dim,
-            "dim": args.dim,
-            "normalize": True,
-            "normalization": "l2",
+            "encoder_type": "sentence_transformer",
+            "encoder": "sentence_transformer",
+            "model_name": args.model_name,
+            "embedding_dim": int(endo_embeddings.shape[1]),
+            "dim": int(endo_embeddings.shape[1]),
+            "normalize": normalize,
+            "normalization": "l2" if normalize else "none",
+            "batch_size": args.batch_size,
             "text_generation_mode": endo.get(
                 "metadata",
                 {},
-            ).get("text_generation_mode", "template"),
+            ).get("text_generation_mode", "deepseek"),
             "endo_text_source": endo.get("metadata", {}).get(
                 "source",
                 "unknown",
@@ -112,15 +128,16 @@ def main():
             "endo_source": endo_path,
             "exo_source": exo_path,
             "note": (
-                "This no-network baseline is deterministic and intended for "
-                "early ablation. It can be replaced by Sentence-BERT or BERT "
-                "embeddings later."
+                "SentenceTransformer embeddings. all-MiniLM-L6-v2 normally "
+                "outputs 384-dimensional sentence embeddings; model-side "
+                "text_projection_dim controls the fusion dimension."
             ),
         },
     )
 
     print("Saved endo embeddings:", endo_embeddings.shape)
     print("Saved exo embeddings:", exo_embeddings.shape)
+    print("Encoder:", args.model_name)
     print("Text dir:", args.text_dir)
 
 

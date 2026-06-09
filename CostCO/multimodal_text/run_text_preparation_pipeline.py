@@ -43,7 +43,11 @@ def parse_args():
         choices=["topo"],
         default="topo",
     )
-    parser.add_argument("--embedding-dim", type=int, default=256)
+    parser.add_argument(
+        "--embedding-model",
+        default="sentence-transformers/all-MiniLM-L6-v2",
+    )
+    parser.add_argument("--embedding-batch-size", type=int, default=32)
     parser.add_argument("--endo-chunk-size", type=int, default=10)
     return parser.parse_args()
 
@@ -109,8 +113,10 @@ def main():
             "encode_satellite_texts.py",
             "--text-dir",
             args.output_dir,
-            "--dim",
-            str(args.embedding_dim),
+            "--model-name",
+            args.embedding_model,
+            "--batch-size",
+            str(args.embedding_batch_size),
         ]
         run_command(command)
 
