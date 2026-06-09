@@ -48,8 +48,24 @@ def load_connectivity_tensor(path):
     if topo.ndim != 3:
         raise ValueError("Expected topology shape [time, nodes, nodes], got %s"
                          % (topo.shape,))
+    topo = normalize_topology_layout(topo)
     topo = np.nan_to_num(topo, nan=0.0, posinf=0.0, neginf=0.0)
     return (topo > 0).astype("float32")
+
+
+def normalize_topology_layout(topo):
+    """Normalize topology to [time, nodes, nodes] without reading traffic data."""
+    shape = topo.shape
+    if shape[1] == shape[2]:
+        return topo
+    if shape[0] == shape[1]:
+        return np.transpose(topo, (2, 0, 1))
+    if shape[0] == shape[2]:
+        return np.transpose(topo, (1, 0, 2))
+    raise ValueError(
+        "Cannot infer topology time axis from shape %s. Expected one square "
+        "node-node plane and one time axis." % (shape,)
+    )
 
 
 def build_topology_time_statistics(topology):
