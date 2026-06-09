@@ -93,14 +93,15 @@ def create_mindtext_costco(shape, endo_embeddings, exo_embeddings,
         text_projection_dim,
         name_prefix="text",
     )
-    text_x = TemporalSemanticAlignmentLayer(
-        projection_dim=alignment_projection_dim,
-        temperature=alignment_temperature,
-        temporal_delta=temporal_delta,
-        flow_text_weight=flow_text_loss_weight,
-        graph_text_weight=0.0,
-        name="temporal_semantic_alignment",
-    )([flow_x, text_x, inputs[2]])
+    if flow_text_loss_weight > 0.0:
+        text_x = TemporalSemanticAlignmentLayer(
+            projection_dim=alignment_projection_dim,
+            temperature=alignment_temperature,
+            temporal_delta=temporal_delta,
+            flow_text_weight=flow_text_loss_weight,
+            graph_text_weight=0.0,
+            name="temporal_semantic_alignment",
+        )([flow_x, text_x, inputs[2]])
 
     fused = k.layers.Concatenate(name="flow_text_fusion")([flow_x, text_x])
     fused = k.layers.Dense(nc, activation="relu", name="fusion_dense_1")(
