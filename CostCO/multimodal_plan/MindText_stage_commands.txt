@@ -101,6 +101,9 @@ Text ablations
 Real text:
   --text-ablation real
 
+Zero text:
+  --text-ablation zero
+
 Shuffle endogenous text by time:
   --text-ablation shuffle_endo
 

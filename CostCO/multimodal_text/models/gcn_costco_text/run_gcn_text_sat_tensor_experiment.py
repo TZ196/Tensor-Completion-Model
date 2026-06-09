@@ -89,7 +89,7 @@ def parse_args():
     )
     parser.add_argument(
         "--text-ablation",
-        choices=["real", "shuffle_endo", "random"],
+        choices=["real", "shuffle_endo", "zero", "random"],
         default="real",
     )
     parser.add_argument("--alignment-projection-dim", type=int, default=128)

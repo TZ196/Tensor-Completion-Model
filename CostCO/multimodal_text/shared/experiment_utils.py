@@ -19,6 +19,8 @@ def apply_text_ablation(endo_embeddings, exo_embeddings, mode, seed):
     if mode == "shuffle_endo":
         order = rng.permutation(endo.shape[0])
         return endo[order], exo
+    if mode == "zero":
+        return np.zeros_like(endo), np.zeros_like(exo)
     if mode == "random":
         endo_random = rng.normal(size=endo.shape).astype("float32")
         exo_random = rng.normal(size=exo.shape).astype("float32")
