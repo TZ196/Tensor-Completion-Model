@@ -149,12 +149,11 @@ Required JSON format:
 
 Recommended segment topics:
 C1_simulation_setup
-C2_constellation_configuration
-C3_topology_generation
-C4_routing_policy
-C5_link_capacity
-C6_traffic_generation
-C7_tensor_completion_task
+C2_constellation_and_orbital_context
+C3_isl_topology_and_routing
+C4_capacity_and_bottleneck_context
+C5_path_traffic_tensor_semantics
+C6_temporal_window_semantics
 
 Configuration text:
 ---
@@ -183,15 +182,28 @@ def build_endogenous_prompt(stats, endo_source, expected_count=None):
     for item in stats:
         base = {
             "time_index": item["time_index"],
+            "normalized_time_phase": item["normalized_time_phase"],
             "num_satellites": item["num_satellites"],
             "edge_count_undirected": item["edge_count_undirected"],
             "avg_degree": item["avg_degree"],
-            "min_degree": item["min_degree"],
-            "max_degree": item["max_degree"],
             "is_connected": item["is_connected"],
             "avg_shortest_path_hops": item["avg_shortest_path_hops"],
+            "shortest_path_variance": item["shortest_path_variance"],
+            "long_path_ratio_gt8": item["long_path_ratio_gt8"],
             "diameter_hops": item["diameter_hops"],
+            "algebraic_connectivity_lambda2": item[
+                "algebraic_connectivity_lambda2"
+            ],
+            "lambda2_delta_from_prev": item["lambda2_delta_from_prev"],
             "changed_edges_from_prev": item["changed_edges_from_prev"],
+            "rolling_edge_change_5": item["rolling_edge_change_5"],
+            "steps_since_major_reconfiguration": item[
+                "steps_since_major_reconfiguration"
+            ],
+            "top_bottleneck_links": item["top_bottleneck_links"],
+            "bottleneck_top3_shortest_path_share": item[
+                "bottleneck_top3_shortest_path_share"
+            ],
         }
         slim_stats.append(base)
 
@@ -206,9 +218,12 @@ path-traffic tensor completion experiment.
 Rules:
 1. %s
 2. Do not infer, add, or hallucinate facts.
-3. Keep wording stable and concise.
-4. Each paragraph should be 45-80 words.
-5. Output valid JSON only. Do not wrap it in markdown fences.
+3. Keep wording stable, concise, and prediction-oriented.
+4. Each paragraph should be 55-90 words.
+5. Do not list every field mechanically. Prefer the most useful signals:
+   normalized phase, path length structure, lambda2, bottleneck links, and
+   topology-change context.
+6. Output valid JSON only. Do not wrap it in markdown fences.
 
 Required JSON format:
 {

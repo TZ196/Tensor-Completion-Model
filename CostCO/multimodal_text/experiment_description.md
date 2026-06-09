@@ -1,42 +1,79 @@
-# 实验描述 — starlink_550_120_satfill_60s
+# Experiment Description: starlink_550_120_satfill_60s
 
-## 一、仿真配置
-- 仿真时长：60 秒
-- 时间步长：3000 ms（每 3000 ms 更新一次转发状态和卫星位置）
-- 卫星总数：120 颗
-- 地面站总数：120 个（卫星锚定模式，每颗卫星锚定地面站）
-- 流量生成模式：satellite_pair_min_cover
-  最小覆盖卫星对。在每个转发状态时间片上贪心选取流集合，以最少流数覆盖所有出现过的有序卫星路径对。
-- 每条流数据量：10,000,000 字节（10 MB）
-- 传输层协议：TCP NewReno（基于丢包的拥塞控制，AIMD）
-- 随机种子：123456789
+This file provides concise exogenous context for multimodal satellite
+path-traffic tensor completion. It should describe static experiment knowledge
+only. It must not include train/validation/test split statistics, masked
+traffic observations, prediction results, or time-slice target values.
 
-## 二、星座结构
-- 星座名称：Starlink-550-120
-- 轨道高度：550 km
-- 轨道面数：10 个
-- 每面卫星数：12 颗
-- 卫星总数：120 颗
-- 轨道倾角：53.0°
-- 轨道周期：约 94.8 分钟（15.19 圈/天）
-- 轨道面间相位差：是（相邻轨道面卫星错开排列）
-- 离心率：0.0000001（近圆轨道）
-- ISL 拓扑模式：isls_plus_grid
-  +Grid网格拓扑。每颗卫星与最多4颗邻居卫星建立ISL链路：同轨道面内前后各1颗（intra-plane），相邻轨道面左右各1颗（inter-plane）。跨轨道面ISL在高纬度地区可能因超过最大ISL距离而断开。
-- 最大 ISL 距离：5017 km
-- 最大 GSL 距离：1090 km
-- ISL 偏移（isl_shift）：0
+## 1. Simulation Setup
 
-## 三、路由策略
-- 路由算法标识：algorithm_free_one_only_over_isls
-- 策略说明：自由配对 + 纯ISL路由。每颗卫星配备1个GSL接口，地面站与当前可视卫星自由配对。端到端流量完全通过星间链路（ISL）在卫星之间逐跳转发，不经过地面站弯管中继（GS relay）。
-- 每卫星 GSL 接口数：1 个
+- Simulation window: 60 seconds.
+- Time resolution: 1000 ms per tensor time slice.
+- Number of time slices: 60.
+- Satellite count: 120.
+- Ground station count: 120.
+- Ground-station assignment mode: satellite-locked, one ground station is
+  associated with each satellite.
+- Transport protocol: TCP NewReno with loss-based AIMD congestion control.
+- Random seed: 123456789.
 
-## 四、链路容量
-- ISL 星间链路速率：10000 Mbit/s
-- GSL 星地链路速率：100 Mbit/s
-- 每端口队列容量：100 包
-- 瓶颈分析：GSL 链路速率仅为 ISL 的 1/100（100 vs 10000 Mbit/s），是端到端路径的主要瓶颈。
+## 2. Constellation And Temporal Context
 
----
-*此文档由 `experiment_desc.py` 自动生成，供 LLM 作为外生上下文使用。*
+- Constellation name: Starlink-550-120.
+- Orbital altitude: 550 km.
+- Orbital planes: 10.
+- Satellites per plane: 12.
+- Inclination: 53.0 degrees.
+- Orbit period: about 94.8 minutes.
+- The 60-second simulation window covers only about 1.05 percent of one orbit.
+- The normalized time phase time_index / 59 is used as a local phase inside
+  this short simulation window. It helps distinguish time slices even when the
+  topology changes sparsely.
+
+## 3. ISL Topology And Routing Context
+
+- ISL topology mode: isls_plus_grid.
+- Each satellite can connect to neighboring satellites inside the same orbital
+  plane and to neighboring satellites in adjacent planes.
+- Intra-plane ISLs are links between satellites in the same orbital plane.
+- Inter-plane ISLs are cross-plane links between adjacent orbital planes.
+- Cross-plane ISLs can be removed when distance or geometry constraints make
+  them infeasible.
+- Routing identifier: algorithm_free_one_only_over_isls.
+- End-to-end satellite traffic is routed over inter-satellite links, not through
+  ground-station relay.
+- Shortest-path hop count describes the topological distance between an ordered
+  source-destination satellite pair.
+
+## 4. Capacity And Bottleneck Context
+
+- ISL link rate: 10000 Mbit/s.
+- GSL link rate: 100 Mbit/s.
+- GSL capacity is much lower than ISL capacity and can be a major access-side
+  bottleneck.
+- Inside the satellite mesh, a link with high edge betweenness lies on many
+  shortest paths and can represent a structural bottleneck.
+- If a few inter-satellite links carry a large share of shortest-path usage,
+  path traffic prediction may depend strongly on those links.
+
+## 5. Path-Traffic Tensor Semantics
+
+- Target tensor: X[source_satellite, destination_satellite, time].
+- Tensor shape: 120 x 120 x 60.
+- Target unit: MB.
+- Each non-zero entry represents the path traffic volume between one source
+  satellite and one destination satellite at one time slice.
+- The tensor completion task predicts unobserved non-zero path-traffic entries
+  from a random transductive split.
+- Zero target entries are excluded by the existing CoSTCo experiment pipeline.
+
+## 6. Topology Metrics Used In Endogenous Text
+
+- Algebraic connectivity lambda2 is the second-smallest eigenvalue of the graph
+  Laplacian. Larger lambda2 usually indicates stronger connectivity redundancy.
+- Mean shortest-path hop count summarizes typical path length.
+- Network diameter is the largest finite shortest-path hop count.
+- The ratio of OD pairs with more than 8 hops describes long-path pressure.
+- Rolling edge-change average summarizes recent topology-change intensity.
+- Top bottleneck links are the links with the highest edge betweenness in the
+  current topology.

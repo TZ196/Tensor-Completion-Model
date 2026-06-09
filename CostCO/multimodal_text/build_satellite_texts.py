@@ -30,6 +30,81 @@ def compute_shortest_distances(adjacency):
     return distances, reachable
 
 
+def algebraic_connectivity(adjacency):
+    graph = np.maximum(adjacency, adjacency.T).astype("float32")
+    degree = np.sum(graph, axis=1)
+    laplacian = np.diag(degree) - graph
+    eigenvalues = np.linalg.eigvalsh(laplacian)
+    if eigenvalues.shape[0] < 2:
+        return 0.0
+    return float(max(eigenvalues[1], 0.0))
+
+
+def edge_betweenness_top3(adjacency):
+    """Brandes edge betweenness for an undirected unweighted graph."""
+    graph = np.maximum(adjacency, adjacency.T) > 0
+    node_count = graph.shape[0]
+    edge_scores = {}
+
+    for source in range(node_count):
+        stack = []
+        predecessors = [[] for _ in range(node_count)]
+        sigma = np.zeros(node_count, dtype="float64")
+        distance = np.full(node_count, -1, dtype="int32")
+        sigma[source] = 1.0
+        distance[source] = 0
+        queue = [source]
+        head = 0
+
+        while head < len(queue):
+            current = queue[head]
+            head += 1
+            stack.append(current)
+            for neighbor in np.flatnonzero(graph[current]):
+                if distance[neighbor] < 0:
+                    queue.append(int(neighbor))
+                    distance[neighbor] = distance[current] + 1
+                if distance[neighbor] == distance[current] + 1:
+                    sigma[neighbor] += sigma[current]
+                    predecessors[neighbor].append(current)
+
+        dependency = np.zeros(node_count, dtype="float64")
+        while stack:
+            node = stack.pop()
+            if sigma[node] <= 0:
+                continue
+            for predecessor in predecessors[node]:
+                share = (
+                    sigma[predecessor] / sigma[node] *
+                    (1.0 + dependency[node])
+                )
+                edge = tuple(sorted((int(predecessor), int(node))))
+                edge_scores[edge] = edge_scores.get(edge, 0.0) + share
+                dependency[predecessor] += share
+
+    for edge in list(edge_scores):
+        edge_scores[edge] *= 0.5
+
+    total_score = sum(edge_scores.values())
+    top_edges = sorted(
+        edge_scores.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:3]
+    top_links = [
+        {
+            "source": int(edge[0]),
+            "destination": int(edge[1]),
+            "score": float(score),
+        }
+        for edge, score in top_edges
+    ]
+    top_share = 0.0
+    if total_score > 0.0:
+        top_share = float(sum(score for _edge, score in top_edges) / total_score)
+    return top_links, top_share
+
+
 def load_connectivity_tensor(path):
     data = np.load(path)
     if "arr_0" in data.files:
@@ -72,6 +147,9 @@ def build_topology_time_statistics(topology):
     time_count, node_count, _ = topology.shape
     stats = []
     previous_adj = None
+    previous_lambda2 = None
+    previous_major_change = 0
+    edge_change_history = []
 
     for time_idx in range(time_count):
         adjacency = topology[time_idx]
@@ -83,6 +161,12 @@ def build_topology_time_statistics(topology):
         if previous_adj is not None:
             changed_entries = int(np.sum(adjacency != previous_adj))
             changed_edges = int(round(changed_entries / 2.0))
+        edge_change_history.append(changed_edges)
+        recent_changes = edge_change_history[-5:]
+        rolling_edge_change_5 = float(np.mean(recent_changes))
+        if changed_edges >= 4:
+            previous_major_change = time_idx
+        steps_since_major_change = int(time_idx - previous_major_change)
 
         distances, reachable = compute_shortest_distances(adjacency)
         off_diag = ~np.eye(node_count, dtype=bool)
@@ -90,14 +174,28 @@ def build_topology_time_statistics(topology):
         if np.any(reachable_pairs):
             reachable_distances = distances[reachable_pairs]
             avg_shortest_path = float(np.mean(reachable_distances))
+            shortest_path_variance = float(np.var(reachable_distances))
             diameter = int(np.max(reachable_distances))
+            long_path_ratio = float(np.mean(reachable_distances > 8))
         else:
             avg_shortest_path = float(node_count + 1)
+            shortest_path_variance = 0.0
             diameter = int(node_count + 1)
+            long_path_ratio = 0.0
 
         is_connected = bool(np.all(reachable | np.eye(node_count, dtype=bool)))
+        lambda2 = algebraic_connectivity(adjacency)
+        lambda2_delta = 0.0 if previous_lambda2 is None else (
+            lambda2 - previous_lambda2
+        )
+        top_bottleneck_links, bottleneck_top3_share = edge_betweenness_top3(
+            adjacency
+        )
         stats.append({
             "time_index": int(time_idx),
+            "normalized_time_phase": (
+                float(time_idx / max(time_count - 1, 1))
+            ),
             "num_satellites": int(node_count),
             "edge_count_undirected": edge_count_undirected,
             "edge_count_directed_entries": edge_count_directed,
@@ -106,10 +204,19 @@ def build_topology_time_statistics(topology):
             "max_degree": float(np.max(degrees)),
             "is_connected": is_connected,
             "avg_shortest_path_hops": avg_shortest_path,
+            "shortest_path_variance": shortest_path_variance,
+            "long_path_ratio_gt8": long_path_ratio,
             "diameter_hops": diameter,
+            "algebraic_connectivity_lambda2": float(lambda2),
+            "lambda2_delta_from_prev": float(lambda2_delta),
             "changed_adjacency_entries_from_prev": changed_entries,
             "changed_edges_from_prev": changed_edges,
+            "rolling_edge_change_5": rolling_edge_change_5,
+            "steps_since_major_reconfiguration": steps_since_major_change,
+            "top_bottleneck_links": top_bottleneck_links,
+            "bottleneck_top3_shortest_path_share": bottleneck_top3_share,
         })
+        previous_lambda2 = lambda2
         previous_adj = adjacency
 
     return stats
@@ -122,25 +229,28 @@ def render_endogenous_text(stats):
             "connected" if item["is_connected"] else "not fully connected"
         )
         text = (
-            "At time {time_index}, the LEO satellite network contains "
-            "{num_satellites} satellites and {edge_count_undirected} "
-            "undirected inter-satellite links. The topology is {connected}, "
-            "with an average node degree of {avg_degree:.2f}, a degree range "
-            "from {min_degree:.0f} to {max_degree:.0f}, an average shortest "
-            "path distance of {avg_shortest_path_hops:.2f} hops, and a "
-            "diameter of {diameter_hops} hops. Compared with the previous "
-            "second, {changed_edges_from_prev} links changed."
+            "At time {time_index}, normalized phase {phase:.3f}, the LEO "
+            "topology has {num_satellites} satellites and "
+            "{edge_count_undirected} undirected ISLs. It is {connected}; "
+            "mean shortest path is {avg_shortest_path_hops:.2f} hops, "
+            "diameter is {diameter_hops}, and lambda2 is {lambda2:.4f} "
+            "({lambda2_delta:+.4f} from the previous step). The top-3 "
+            "bottleneck links cover {bottleneck_share:.2%} of shortest-path "
+            "edge usage. {changed_edges_from_prev} links changed this second, "
+            "with a 5-step rolling change average of {rolling_change:.2f}."
         ).format(
             time_index=item["time_index"],
+            phase=item["normalized_time_phase"],
             num_satellites=item["num_satellites"],
             edge_count_undirected=item["edge_count_undirected"],
             connected=connected_text,
-            avg_degree=item["avg_degree"],
-            min_degree=item["min_degree"],
-            max_degree=item["max_degree"],
             avg_shortest_path_hops=item["avg_shortest_path_hops"],
             diameter_hops=item["diameter_hops"],
+            lambda2=item["algebraic_connectivity_lambda2"],
+            lambda2_delta=item["lambda2_delta_from_prev"],
+            bottleneck_share=item["bottleneck_top3_shortest_path_share"],
             changed_edges_from_prev=item["changed_edges_from_prev"],
+            rolling_change=item["rolling_edge_change_5"],
         )
         texts.append({
             "time_index": item["time_index"],

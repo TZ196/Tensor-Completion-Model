@@ -89,6 +89,15 @@ Allowed topology fields:
 10. diameter_hops
 11. changed_adjacency_entries_from_prev
 12. changed_edges_from_prev
+13. normalized_time_phase
+14. shortest_path_variance
+15. long_path_ratio_gt8
+16. algebraic_connectivity_lambda2
+17. lambda2_delta_from_prev
+18. rolling_edge_change_5
+19. steps_since_major_reconfiguration
+20. top_bottleneck_links
+21. bottleneck_top3_shortest_path_share
 
 t = 0 boundary:
 
@@ -105,11 +114,17 @@ Possible future topology-only enrichments:
 
 1. Top-3 degree-central satellites.
 2. Clustering coefficient.
-3. Shortest-path hop histogram summary.
-4. Relative changes in diameter or shortest-path statistics.
-5. Sliding-window topology summaries over 3-5 seconds.
+3. Orbit-plane-aware intra/inter-plane link counts, if satellite-to-plane
+   metadata is available.
 
 These additions remain leakage-safe because they use only A_t.
+
+Text length policy:
+
+Text is an auxiliary modality. The endogenous paragraph should not mechanically
+list every topology number. It should mention only the strongest signals for
+prediction: local time phase, path-length structure, lambda2 connectivity,
+top bottleneck links, and recent topology-change context.
 
 
 5. Exogenous Text
