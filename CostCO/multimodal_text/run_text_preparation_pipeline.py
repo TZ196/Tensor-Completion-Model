@@ -48,6 +48,7 @@ def parse_args():
         default="sentence-transformers/all-MiniLM-L6-v2",
     )
     parser.add_argument("--embedding-batch-size", type=int, default=32)
+    parser.add_argument("--embedding-local-files-only", action="store_true")
     parser.add_argument("--endo-chunk-size", type=int, default=10)
     parser.add_argument("--request-timeout", type=int, default=300)
     return parser.parse_args()
@@ -116,6 +117,8 @@ def main():
             "--batch-size",
             str(args.embedding_batch_size),
         ]
+        if args.embedding_local_files_only:
+            command.append("--local-files-only")
         run_command(command)
 
     print("Pipeline stage completed:", args.stage)

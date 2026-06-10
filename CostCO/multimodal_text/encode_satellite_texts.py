@@ -15,7 +15,8 @@ def l2_normalize(matrix):
     return matrix / np.maximum(norm, 1e-8)
 
 
-def encode_sentence_transformer(texts, model_name, batch_size, normalize):
+def encode_sentence_transformer(texts, model_name, batch_size, normalize,
+                                local_files_only):
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
@@ -24,7 +25,25 @@ def encode_sentence_transformer(texts, model_name, batch_size, normalize):
             "Install it with: pip install -U sentence-transformers"
         ) from exc
 
-    model = SentenceTransformer(model_name)
+    try:
+        model = SentenceTransformer(
+            model_name,
+            local_files_only=local_files_only,
+        )
+    except TypeError:
+        if local_files_only:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        model = SentenceTransformer(model_name)
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to load SentenceTransformer model '%s'. If the server "
+            "cannot access Hugging Face or has SSL certificate issues, "
+            "download all-MiniLM-L6-v2 on another machine, copy the model "
+            "directory to the server, and pass that local path with "
+            "--model-name /path/to/all-MiniLM-L6-v2 --local-files-only."
+            % model_name
+        ) from exc
     embeddings = model.encode(
         texts,
         batch_size=batch_size,
@@ -59,6 +78,11 @@ def parse_args():
     )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument(
+        "--local-files-only",
+        action="store_true",
+        help="Load the SentenceTransformer model only from local files.",
+    )
+    parser.add_argument(
         "--no-normalize",
         action="store_true",
         help="Disable L2 normalization of text embeddings.",
@@ -87,12 +111,14 @@ def main():
         args.model_name,
         args.batch_size,
         normalize,
+        args.local_files_only,
     )
     exo_embeddings = encode_sentence_transformer(
         exo_texts,
         args.model_name,
         args.batch_size,
         normalize,
+        args.local_files_only,
     )
 
     np.save(
@@ -114,6 +140,7 @@ def main():
             "normalize": normalize,
             "normalization": "l2" if normalize else "none",
             "batch_size": args.batch_size,
+            "local_files_only": bool(args.local_files_only),
             "text_generation_mode": endo.get(
                 "metadata",
                 {},

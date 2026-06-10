@@ -35,6 +35,18 @@ python run_text_preparation_pipeline.py \
   --embedding-model sentence-transformers/all-MiniLM-L6-v2 \
   --embedding-batch-size 32
 
+If the server cannot download from Hugging Face, copy a local
+all-MiniLM-L6-v2 directory to the server and use:
+
+python run_text_preparation_pipeline.py \
+  --stage all \
+  --topology-path ../sat_connectivity_tensor_dynamic_60s_1000ms.npz \
+  --env-path deepseek.env \
+  --config-path experiment_description.md \
+  --embedding-model /path/to/all-MiniLM-L6-v2 \
+  --embedding-batch-size 32 \
+  --embedding-local-files-only
+
 The endogenous text preparation uses topology-only statistics from:
   text_data/time_stats_topo_only.json
 
