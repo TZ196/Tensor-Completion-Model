@@ -100,7 +100,11 @@ def format_lr(lr):
 
 
 def stage_flags(text_stage, flow_text_weight, graph_text_weight):
-    is_global_context = text_stage in ["concat", "global_context_concat"]
+    is_global_context = text_stage in [
+        "concat",
+        "global_context_concat",
+        "global_context_condenser",
+    ]
     return {
         "global_context_concat": is_global_context,
         "cross_view_attention": text_stage in [
@@ -113,6 +117,9 @@ def stage_flags(text_stage, flow_text_weight, graph_text_weight):
             "segment_condenser",
         ],
         "segment_condenser": text_stage == "segment_condenser",
+        "global_context_condenser": (
+            text_stage == "global_context_condenser"
+        ),
         "contrastive_enabled": (
             flow_text_weight > 0.0 or graph_text_weight > 0.0
         ),

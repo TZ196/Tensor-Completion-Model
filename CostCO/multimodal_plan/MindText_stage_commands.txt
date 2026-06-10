@@ -107,9 +107,23 @@ Use the Stage 2 command and change/add:
   --condenser-epsilon 0.05 \
   --condenser-loss-weight 1e-4
 
-Stage 3d: Add multimodal semantic alignment
+Note: segment_condenser still uses cross-attention after condensing exogenous
+segments.
+
+Stage 3d: Add global-context condenser without cross-attention
+--------------------------------------------------------------
+Use the Stage 2 command and change/add:
+  --text-stage global_context_condenser \
+  --condenser-alpha 0.5 \
+  --condenser-epsilon 0.05 \
+  --condenser-loss-weight 1e-4
+
+This stage condenses exogenous segments and concatenates them with endogenous
+time text. It does not call cross-attention or semantic gating.
+
+Stage 3e: Add multimodal semantic alignment
 -------------------------------------------
-Use Stage 3a/3b/3c and add:
+Use Stage 3a/3b/3c/3d and add:
   --flow-text-loss-weight 0.01 \
   --graph-text-loss-weight 0.01 \
   --alignment-projection-dim 128 \

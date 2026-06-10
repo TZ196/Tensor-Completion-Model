@@ -70,6 +70,7 @@ class MindTextFusionLayer(k.layers.Layer):
         if stage not in [
             "concat",
             "global_context_concat",
+            "global_context_condenser",
             "cross_attention",
             "semantic_gating",
             "segment_condenser",
@@ -163,6 +164,10 @@ class MindTextFusionLayer(k.layers.Layer):
                 self.exo_pooled[None, :],
                 [tf.shape(time)[0], self.text_dim],
             )
+            return tf.concat([endo, exo], axis=1)
+
+        if self.stage == "global_context_condenser":
+            exo = self._condense_exo(endo, exo_segments)
             return tf.concat([endo, exo], axis=1)
 
         if self.stage == "segment_condenser":

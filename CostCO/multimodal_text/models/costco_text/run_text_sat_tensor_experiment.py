@@ -74,6 +74,7 @@ def parse_args():
         choices=[
             "concat",
             "global_context_concat",
+            "global_context_condenser",
             "cross_attention",
             "semantic_gating",
             "segment_condenser",
@@ -237,7 +238,11 @@ def main():
     )
 
     flags = stage_flags(args.text_stage, args.flow_text_loss_weight, 0.0)
-    is_global_context = args.text_stage in ["concat", "global_context_concat"]
+    is_global_context = args.text_stage in [
+        "concat",
+        "global_context_concat",
+        "global_context_condenser",
+    ]
     model_family = (
         "MindText-CoSTCo-GlobalContext"
         if is_global_context else "MindText-CoSTCo"
