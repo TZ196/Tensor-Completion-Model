@@ -71,6 +71,7 @@ class MindTextFusionLayer(k.layers.Layer):
             "concat",
             "global_context_concat",
             "global_context_condenser",
+            "global_joint_condenser",
             "cross_attention",
             "semantic_gating",
             "segment_condenser",
@@ -115,25 +116,22 @@ class MindTextFusionLayer(k.layers.Layer):
         x = x + self.ffn_2(self.ffn_1(x))
         return x
 
-    def _condense_exo(self, endo, exo_segments):
-        batch = tf.shape(endo)[0]
-        endo_expanded = tf.broadcast_to(
-            endo[:, None, :],
-            [batch, self.exo_segments, self.text_dim],
+    def _condense_segments(self, context, segments, original):
+        batch = tf.shape(context)[0]
+        segment_count = tf.shape(segments)[1]
+        context_expanded = tf.broadcast_to(
+            context[:, None, :],
+            [batch, segment_count, self.text_dim],
         )
-        score_input = tf.concat([endo_expanded, exo_segments], axis=-1)
+        score_input = tf.concat([context_expanded, segments], axis=-1)
         logits = tf.squeeze(self.segment_score(score_input), axis=-1)
         weights = tf.nn.softmax(logits, axis=-1)
 
         eps = tf.cast(self.condenser_epsilon, tf.float32)
-        uniform = tf.ones_like(weights) / tf.cast(self.exo_segments, tf.float32)
+        uniform = tf.ones_like(weights) / tf.cast(segment_count, tf.float32)
         smooth_weights = (1.0 - eps) * weights + eps * uniform
-        condensed = exo_segments * smooth_weights[:, :, None]
+        condensed = segments * smooth_weights[:, :, None]
         pooled = tf.reduce_sum(condensed, axis=1)
-        original = tf.broadcast_to(
-            self.exo_pooled[None, :],
-            [batch, self.text_dim],
-        )
         mixed = (
             (1.0 - self.condenser_alpha) * original +
             self.condenser_alpha * pooled
@@ -150,6 +148,19 @@ class MindTextFusionLayer(k.layers.Layer):
             )
             self.add_loss(self.condenser_loss_weight * kl)
         return mixed
+
+    def _condense_exo(self, endo, exo_segments):
+        batch = tf.shape(endo)[0]
+        original = tf.broadcast_to(
+            self.exo_pooled[None, :],
+            [batch, self.text_dim],
+        )
+        return self._condense_segments(endo, exo_segments, original)
+
+    def _condense_joint(self, endo, exo_segments):
+        joint_segments = tf.concat([endo[:, None, :], exo_segments], axis=1)
+        original = tf.reduce_mean(joint_segments, axis=1)
+        return self._condense_segments(endo, joint_segments, original)
 
     def call(self, time_input):
         time = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
@@ -169,6 +180,10 @@ class MindTextFusionLayer(k.layers.Layer):
         if self.stage == "global_context_condenser":
             exo = self._condense_exo(endo, exo_segments)
             return tf.concat([endo, exo], axis=1)
+
+        if self.stage == "global_joint_condenser":
+            condensed = self._condense_joint(endo, exo_segments)
+            return tf.concat([endo, condensed], axis=1)
 
         if self.stage == "segment_condenser":
             exo = self._condense_exo(endo, exo_segments)

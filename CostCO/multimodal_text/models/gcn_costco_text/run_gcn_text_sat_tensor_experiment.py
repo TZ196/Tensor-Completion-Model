@@ -84,6 +84,7 @@ def parse_args():
             "concat",
             "global_context_concat",
             "global_context_condenser",
+            "global_joint_condenser",
             "cross_attention",
             "semantic_gating",
             "segment_condenser",
@@ -265,6 +266,7 @@ def main():
         "concat",
         "global_context_concat",
         "global_context_condenser",
+        "global_joint_condenser",
     ]
     model_family = (
         "MindText-GCN-CoSTCo-GlobalContext"
