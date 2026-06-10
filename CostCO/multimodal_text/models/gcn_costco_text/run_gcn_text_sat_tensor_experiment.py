@@ -4,6 +4,7 @@ import os
 import sys
 from pprint import pprint
 
+import numpy as np
 from tensorflow import keras as k
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -203,6 +204,7 @@ def main():
     target_scale = get_target_scale(train_values, args.target_normalization)
     train_targets = train_values / target_scale
     val_targets = val_values / target_scale
+    output_bias_init = float(np.mean(train_targets))
 
     print("Tensor shape:", shape.tolist())
     print("Topology shape:", topology.shape)
@@ -213,6 +215,7 @@ def main():
     print("Split path:", args.split_path)
     print("Metrics path:", args.metrics_path)
     print("Target scale:", target_scale)
+    print("Output bias init:", output_bias_init)
 
     model = create_mindtext_gcn_costco(
         shape,
@@ -233,6 +236,7 @@ def main():
         condenser_alpha=args.condenser_alpha,
         condenser_epsilon=args.condenser_epsilon,
         condenser_loss_weight=args.condenser_loss_weight,
+        output_bias_init=output_bias_init,
     )
     compile_mindtext_gcn_costco(model, lr=args.lr)
     model.fit(
@@ -305,6 +309,7 @@ def main():
             "batch_size": args.batch_size,
             "target_normalization": args.target_normalization,
             "target_scale": target_scale,
+            "output_bias_init": output_bias_init,
             "metrics_scale": "original",
             "seed": args.seed,
             "alignment_projection_dim": args.alignment_projection_dim,

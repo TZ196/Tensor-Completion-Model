@@ -40,7 +40,8 @@ def create_mindtext_gcn_costco(shape, topology, endo_embeddings,
                                graph_text_loss_weight=0.0,
                                condenser_alpha=0.5,
                                condenser_epsilon=0.05,
-                               condenser_loss_weight=0.0):
+                               condenser_loss_weight=0.0,
+                               output_bias_init=0.0):
     shape = list(shape)
     if len(shape) != 3:
         raise ValueError("MindText-GCN-CoSTCo-Base expects a 3-D tensor")
@@ -132,9 +133,12 @@ def create_mindtext_gcn_costco(shape, topology, endo_embeddings,
         activation="relu",
         name="fusion_dense_2",
     )(fused)
-    output = k.layers.Dense(1, activation="relu", name="traffic_output")(
-        fused
-    )
+    output = k.layers.Dense(
+        1,
+        activation=None,
+        bias_initializer=k.initializers.Constant(output_bias_init),
+        name="traffic_output",
+    )(fused)
     return k.Model(
         inputs=inputs,
         outputs=output,
@@ -145,7 +149,8 @@ def create_mindtext_gcn_costco(shape, topology, endo_embeddings,
 def create_mindtext_gcn_costco_base(shape, topology, endo_embeddings,
                                     exo_embeddings, rank=50, nc=64,
                                     node_dim=64, gcn_dim=128,
-                                    text_projection_dim=128):
+                                    text_projection_dim=128,
+                                    output_bias_init=0.0):
     return create_mindtext_gcn_costco(
         shape,
         topology,
@@ -157,6 +162,7 @@ def create_mindtext_gcn_costco_base(shape, topology, endo_embeddings,
         gcn_dim=gcn_dim,
         text_projection_dim=text_projection_dim,
         text_stage="concat",
+        output_bias_init=output_bias_init,
     )
 
 

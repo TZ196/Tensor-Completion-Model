@@ -276,12 +276,17 @@ class TemporalSemanticAlignmentLayer(k.layers.Layer):
 def create_text_projection(text_features, text_projection_dim, name_prefix):
     x = k.layers.Dense(
         text_projection_dim,
-        activation="relu",
         name="%s_projection_dense_1" % name_prefix,
     )(text_features)
+    x = k.layers.LayerNormalization(
+        name="%s_projection_norm_1" % name_prefix,
+    )(x)
+    x = k.layers.Activation("gelu", name="%s_projection_gelu" % name_prefix)(x)
     x = k.layers.Dense(
         text_projection_dim,
-        activation="relu",
         name="%s_projection_dense_2" % name_prefix,
+    )(x)
+    x = k.layers.LayerNormalization(
+        name="%s_projection_norm_2" % name_prefix,
     )(x)
     return x

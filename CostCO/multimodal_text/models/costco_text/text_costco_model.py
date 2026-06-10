@@ -37,7 +37,8 @@ def create_mindtext_costco(shape, endo_embeddings, exo_embeddings,
                            alignment_temperature=0.2, temporal_delta=2,
                            flow_text_loss_weight=0.0,
                            condenser_alpha=0.5, condenser_epsilon=0.05,
-                           condenser_loss_weight=0.0):
+                           condenser_loss_weight=0.0,
+                           output_bias_init=0.0):
     shape = list(shape)
     if len(shape) != 3:
         raise ValueError("MindText-CoSTCo-Base expects a 3-D tensor shape")
@@ -112,14 +113,18 @@ def create_mindtext_costco(shape, endo_embeddings, exo_embeddings,
         activation="relu",
         name="fusion_dense_2",
     )(fused)
-    output = k.layers.Dense(1, activation="relu", name="traffic_output")(
-        fused
-    )
+    output = k.layers.Dense(
+        1,
+        activation=None,
+        bias_initializer=k.initializers.Constant(output_bias_init),
+        name="traffic_output",
+    )(fused)
     return k.Model(inputs=inputs, outputs=output, name="MindText_CoSTCo")
 
 
 def create_mindtext_costco_base(shape, endo_embeddings, exo_embeddings,
-                                rank=50, nc=64, text_projection_dim=128):
+                                rank=50, nc=64, text_projection_dim=128,
+                                output_bias_init=0.0):
     return create_mindtext_costco(
         shape,
         endo_embeddings,
@@ -128,6 +133,7 @@ def create_mindtext_costco_base(shape, endo_embeddings, exo_embeddings,
         nc=nc,
         text_projection_dim=text_projection_dim,
         text_stage="concat",
+        output_bias_init=output_bias_init,
     )
 
 
