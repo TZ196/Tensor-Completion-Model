@@ -16,6 +16,10 @@ def apply_text_ablation(endo_embeddings, exo_embeddings, mode, seed):
     exo = np.array(exo_embeddings, copy=True)
     if mode == "real":
         return endo, exo
+    if mode == "endo_only":
+        return endo, np.zeros_like(exo)
+    if mode == "exo_only":
+        return np.zeros_like(endo), exo
     if mode == "shuffle_endo":
         order = rng.permutation(endo.shape[0])
         return endo[order], exo
@@ -96,7 +100,9 @@ def format_lr(lr):
 
 
 def stage_flags(text_stage, flow_text_weight, graph_text_weight):
+    is_global_context = text_stage in ["concat", "global_context_concat"]
     return {
+        "global_context_concat": is_global_context,
         "cross_view_attention": text_stage in [
             "cross_attention",
             "semantic_gating",

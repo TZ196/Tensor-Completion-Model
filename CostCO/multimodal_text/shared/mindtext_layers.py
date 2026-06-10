@@ -69,6 +69,7 @@ class MindTextFusionLayer(k.layers.Layer):
             )
         if stage not in [
             "concat",
+            "global_context_concat",
             "cross_attention",
             "semantic_gating",
             "segment_condenser",
@@ -157,7 +158,7 @@ class MindTextFusionLayer(k.layers.Layer):
             [tf.shape(time)[0], self.exo_segments, self.text_dim],
         )
 
-        if self.stage == "concat":
+        if self.stage in ["concat", "global_context_concat"]:
             exo = tf.broadcast_to(
                 self.exo_pooled[None, :],
                 [tf.shape(time)[0], self.text_dim],

@@ -19,6 +19,16 @@ The project has three existing tensor-completion baselines:
 The MindText extension adds a text modality inspired by MindTS, but adapts it
 to satellite path-traffic tensor completion.
 
+Current main model:
+
+MindText-GCN-CoSTCo-GlobalContext
+
+The exogenous text is experiment-level global configuration rather than a
+dynamic event stream. Therefore, the main text branch uses global-context
+concat instead of cross-attention:
+
+z_text[t] = MLP(E_endo[t] || mean(E_exo_segments))
+
 Current priority backbone:
 
 rank = 50
@@ -206,10 +216,25 @@ SentenceTransformer embeddings are L2-normalized before saving unless
 --no-normalize is explicitly passed.
 
 
-7. Text Branch Execution Order
+7. Text Branch Options
 ------------------------------
 
-The implementation exposes staged options, but the final text branch order is:
+Main option:
+
+GlobalContext-Concat
+
+E_exo_global = mean(E_exo_segments)
+z_text[t] = MLP(E_endo[t] || E_exo_global)
+
+This matches the data semantics: endogenous text is the time-level dynamic
+state, while exogenous text is global experiment context.
+
+Cross-attention is retained only as an ablation. It is not the main route
+because the exogenous text is static global configuration, not a dynamic event
+library.
+
+The implementation still exposes staged options. For the full optional text
+interaction branch, the order is:
 
 1. Optional segment-level content condenser.
 2. Cross-view attention.

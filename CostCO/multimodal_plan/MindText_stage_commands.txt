@@ -55,12 +55,12 @@ The endogenous template does not read the traffic tensor, does not create a
 random mask, and does not use train/validation/test split information. Random
 masking is used only by the model training runners.
 
-Stage 1: CoSTCo + text concat baseline
---------------------------------------
+Stage 1: CoSTCo + GlobalContext text baseline
+---------------------------------------------
 python run_text_sat_tensor_experiment.py \
   --rank 50 \
   --nc 64 \
-  --text-stage concat \
+  --text-stage global_context_concat \
   --text-projection-dim 128 \
   --lr 1e-3 \
   --epochs 200 \
@@ -68,14 +68,14 @@ python run_text_sat_tensor_experiment.py \
   --target-normalization max \
   --seed 3
 
-Stage 2: GCN-CoSTCo + text concat baseline
-------------------------------------------
+Stage 2: GCN-CoSTCo + GlobalContext text baseline
+-------------------------------------------------
 python run_gcn_text_sat_tensor_experiment.py \
   --rank 50 \
   --nc 64 \
   --node-dim 64 \
   --gcn-dim 128 \
-  --text-stage concat \
+  --text-stage global_context_concat \
   --text-projection-dim 128 \
   --lr 1e-3 \
   --epochs 200 \
@@ -114,6 +114,12 @@ Text ablations
 --------------
 Real text:
   --text-ablation real
+
+Endogenous text only:
+  --text-ablation endo_only
+
+Exogenous global context only:
+  --text-ablation exo_only
 
 Zero text:
   --text-ablation zero

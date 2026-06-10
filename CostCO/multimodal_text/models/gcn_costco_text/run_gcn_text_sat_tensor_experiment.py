@@ -81,15 +81,23 @@ def parse_args():
         "--text-stage",
         choices=[
             "concat",
+            "global_context_concat",
             "cross_attention",
             "semantic_gating",
             "segment_condenser",
         ],
-        default="concat",
+        default="global_context_concat",
     )
     parser.add_argument(
         "--text-ablation",
-        choices=["real", "shuffle_endo", "zero", "random"],
+        choices=[
+            "real",
+            "endo_only",
+            "exo_only",
+            "shuffle_endo",
+            "zero",
+            "random",
+        ],
         default="real",
     )
     parser.add_argument("--alignment-projection-dim", type=int, default=128)
@@ -248,10 +256,20 @@ def main():
         args.flow_text_loss_weight,
         args.graph_text_loss_weight,
     )
+    is_global_context = args.text_stage in ["concat", "global_context_concat"]
+    model_family = (
+        "MindText-GCN-CoSTCo-GlobalContext"
+        if is_global_context else "MindText-GCN-CoSTCo"
+    )
+    fusion_name = (
+        "costco_flow_plus_gcn_topology_plus_time_endo_text_and_global_exo_text"
+        if is_global_context else
+        "costco_flow_plus_gcn_topology_plus_endo_exo_text"
+    )
     results = {
         "config": {
-            "model_family": "MindText-GCN-CoSTCo",
-            "fusion": "costco_flow_plus_gcn_topology_plus_endo_exo_text",
+            "model_family": model_family,
+            "fusion": fusion_name,
             "tensor_path": args.tensor_path,
             "topology_path": args.topology_path,
             "endo_embedding_path": args.endo_embedding_path,
