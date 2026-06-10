@@ -256,6 +256,7 @@ Structured statistics:
 def generate_exogenous(args, env):
     config_text = read_text(args.config_path)
     system_prompt, user_prompt = build_exogenous_prompt(config_text)
+    print("Generating DeepSeek exogenous text...", flush=True)
     response = deepseek_chat(
         env,
         system_prompt,
@@ -308,8 +309,22 @@ def generate_endogenous(args, env):
     stats = stats_data["time_statistics"]
     chunks = []
     chunk_size = max(1, args.endo_chunk_size)
+    total_chunks = (len(stats) + chunk_size - 1) // chunk_size
+    print(
+        "Generating DeepSeek endogenous text in %d chunks "
+        "(chunk_size=%d, time_slices=%d)..." %
+        (total_chunks, chunk_size, len(stats)),
+        flush=True,
+    )
     for start in range(0, len(stats), chunk_size):
         chunk_stats = stats[start:start + chunk_size]
+        chunk_id = start // chunk_size + 1
+        end = start + len(chunk_stats) - 1
+        print(
+            "DeepSeek endogenous chunk %d/%d: time slices %d-%d, "
+            "requesting..." % (chunk_id, total_chunks, start, end),
+            flush=True,
+        )
         system_prompt, user_prompt = build_endogenous_prompt(
             chunk_stats,
             args.endo_source,
@@ -321,6 +336,11 @@ def generate_endogenous(args, env):
             user_prompt,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
+        )
+        print(
+            "DeepSeek endogenous chunk %d/%d: response received, parsing..." %
+            (chunk_id, total_chunks),
+            flush=True,
         )
         try:
             chunk = extract_json(response)
@@ -338,6 +358,11 @@ def generate_endogenous(args, env):
             )
         if "texts" not in chunk:
             raise ValueError("Endogenous DeepSeek JSON must contain texts")
+        print(
+            "DeepSeek endogenous chunk %d/%d: parsed %d texts." %
+            (chunk_id, total_chunks, len(chunk["texts"])),
+            flush=True,
+        )
         chunks.append(chunk)
 
     result = merge_endogenous_chunks(
