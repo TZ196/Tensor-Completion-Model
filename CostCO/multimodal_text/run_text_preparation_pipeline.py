@@ -49,6 +49,7 @@ def parse_args():
     )
     parser.add_argument("--embedding-batch-size", type=int, default=32)
     parser.add_argument("--endo-chunk-size", type=int, default=10)
+    parser.add_argument("--request-timeout", type=int, default=300)
     return parser.parse_args()
 
 
@@ -90,6 +91,8 @@ def main():
             args.endo_source,
             "--endo-chunk-size",
             str(args.endo_chunk_size),
+            "--request-timeout",
+            str(args.request_timeout),
             "--exo-output-path",
             exo_path,
             "--endo-output-path",

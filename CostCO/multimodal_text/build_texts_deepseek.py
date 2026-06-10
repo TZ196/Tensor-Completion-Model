@@ -65,7 +65,7 @@ def extract_json(text):
 
 
 def deepseek_chat(env, system_prompt, user_prompt, temperature=0.0,
-                  max_tokens=4096, retries=3):
+                  max_tokens=4096, retries=3, request_timeout=300):
     api_key = env.get("DEEPSEEK_API_KEY")
     if not api_key or api_key == "replace_with_your_key":
         raise ValueError(
@@ -98,7 +98,10 @@ def deepseek_chat(env, system_prompt, user_prompt, temperature=0.0,
 
     for attempt in range(retries):
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(
+                request,
+                timeout=request_timeout,
+            ) as response:
                 result = json.loads(response.read().decode("utf-8"))
             return result["choices"][0]["message"]["content"]
         except (urllib.error.URLError, urllib.error.HTTPError) as exc:
@@ -106,7 +109,7 @@ def deepseek_chat(env, system_prompt, user_prompt, temperature=0.0,
                 raise
             wait_seconds = 2 ** attempt
             print("DeepSeek request failed, retrying in %ds: %s" %
-                  (wait_seconds, exc))
+                  (wait_seconds, exc), flush=True)
             time.sleep(wait_seconds)
 
     raise RuntimeError("DeepSeek request failed")
@@ -263,6 +266,7 @@ def generate_exogenous(args, env):
         user_prompt,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
+        request_timeout=args.request_timeout,
     )
     result = extract_json(response)
     if "segments" not in result:
@@ -336,6 +340,7 @@ def generate_endogenous(args, env):
             user_prompt,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
+            request_timeout=args.request_timeout,
         )
         print(
             "DeepSeek endogenous chunk %d/%d: response received, parsing..." %
@@ -408,6 +413,7 @@ def parse_args():
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--request-timeout", type=int, default=300)
     parser.add_argument(
         "--endo-chunk-size",
         type=int,
