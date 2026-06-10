@@ -75,6 +75,14 @@ sat_connectivity_tensor_dynamic_60s_1000ms.npz
 
 One endogenous paragraph is generated per time slice.
 
+Generation method:
+
+Structured topology features are inserted into a unified deterministic
+template. DeepSeek is not used for endogenous text in the main pipeline. This
+matches the MindTS-style idea of converting each segment into structured
+features first and then using a stable prompt/template, which reduces semantic
+drift, output uncertainty, and JSON-generation failures.
+
 Allowed topology fields:
 
 1. time_index
@@ -140,12 +148,11 @@ These segments are not time-varying.
 Typical segment roles:
 
 1. C1 simulation setup
-2. C2 constellation configuration
-3. C3 topology generation
-4. C4 routing policy
-5. C5 link capacity
-6. C6 traffic generation
-7. C7 tensor completion task
+2. C2 constellation and orbital context
+3. C3 ISL topology and routing
+4. C4 capacity and bottleneck context
+5. C5 path-traffic tensor semantics
+6. C6 temporal window semantics
 
 Boundary between exogenous and endogenous text:
 
@@ -163,10 +170,11 @@ Key/Value = static exogenous background segments.
 6. Text Generation And Encoding
 -------------------------------
 
-DeepSeek is used for text content generation:
+Text content generation:
 
-1. Generate exogenous segments from experiment_description.md.
-2. Generate endogenous time-slice paragraphs from topology-only statistics.
+1. Endogenous text: deterministic unified template from topology-only
+   statistics.
+2. Exogenous text: DeepSeek summary from experiment_description.md.
 
 The embedding encoder is a separate component.
 

@@ -228,16 +228,50 @@ def render_endogenous_text(stats):
         connected_text = (
             "connected" if item["is_connected"] else "not fully connected"
         )
+        if item["long_path_ratio_gt8"] >= 0.25:
+            path_pressure = "high"
+        elif item["long_path_ratio_gt8"] >= 0.10:
+            path_pressure = "moderate"
+        else:
+            path_pressure = "low"
+
+        if item["algebraic_connectivity_lambda2"] >= 0.40:
+            redundancy = "strong"
+        elif item["algebraic_connectivity_lambda2"] >= 0.20:
+            redundancy = "moderate"
+        else:
+            redundancy = "weak"
+
+        if item["rolling_edge_change_5"] >= 4.0:
+            change_state = "active"
+        elif item["rolling_edge_change_5"] >= 1.0:
+            change_state = "mild"
+        else:
+            change_state = "stable"
+
+        link_text = "none"
+        if item["top_bottleneck_links"]:
+            link_text = ", ".join([
+                "sat-%d to sat-%d" % (
+                    link["source"],
+                    link["destination"],
+                )
+                for link in item["top_bottleneck_links"][:3]
+            ])
+
         text = (
             "At time {time_index}, normalized phase {phase:.3f}, the LEO "
             "topology has {num_satellites} satellites and "
             "{edge_count_undirected} undirected ISLs. It is {connected}; "
             "mean shortest path is {avg_shortest_path_hops:.2f} hops, "
-            "diameter is {diameter_hops}, and lambda2 is {lambda2:.4f} "
-            "({lambda2_delta:+.4f} from the previous step). The top-3 "
-            "bottleneck links cover {bottleneck_share:.2%} of shortest-path "
-            "edge usage. {changed_edges_from_prev} links changed this second, "
-            "with a 5-step rolling change average of {rolling_change:.2f}."
+            "diameter is {diameter_hops}, and long-path pressure is "
+            "{path_pressure}. Algebraic connectivity lambda2 is "
+            "{lambda2:.4f}, indicating {redundancy} redundancy "
+            "({lambda2_delta:+.4f} from the previous step). The main "
+            "bottleneck links are {link_text}, covering {bottleneck_share:.2%} "
+            "of shortest-path edge usage. Recent topology change is "
+            "{change_state}, with a 5-step average of {rolling_change:.2f} "
+            "changed links."
         ).format(
             time_index=item["time_index"],
             phase=item["normalized_time_phase"],
@@ -246,10 +280,13 @@ def render_endogenous_text(stats):
             connected=connected_text,
             avg_shortest_path_hops=item["avg_shortest_path_hops"],
             diameter_hops=item["diameter_hops"],
+            path_pressure=path_pressure,
             lambda2=item["algebraic_connectivity_lambda2"],
             lambda2_delta=item["lambda2_delta_from_prev"],
+            redundancy=redundancy,
+            link_text=link_text,
             bottleneck_share=item["bottleneck_top3_shortest_path_share"],
-            changed_edges_from_prev=item["changed_edges_from_prev"],
+            change_state=change_state,
             rolling_change=item["rolling_edge_change_5"],
         )
         texts.append({
@@ -353,9 +390,14 @@ def parse_args():
         default=os.path.join(SCRIPT_DIR, "text_data"),
     )
     parser.add_argument(
+        "--endo-output-path",
+        default=None,
+        help="Path for template endogenous text JSON. Defaults to output-dir/endo_texts.json.",
+    )
+    parser.add_argument(
         "--write-template-endo",
         action="store_true",
-        help="Write template endogenous topology texts as a fallback artifact.",
+        help="Also write endo_texts_topo_template.json as a debug artifact.",
     )
     parser.add_argument(
         "--write-template-exo",
@@ -388,6 +430,37 @@ def main():
             "time_statistics": stats,
         },
     )
+    endo_output_path = args.endo_output_path
+    if endo_output_path is None:
+        endo_output_path = os.path.join(output_dir, "endo_texts.json")
+    write_json(
+        endo_output_path,
+        {
+            "metadata": {
+                "source": "topology_statistics_template",
+                "text_generation_mode": "template",
+                "num_time_slices": int(topology.shape[0]),
+                "template_policy": (
+                    "Uniform endogenous text template from structured "
+                    "topology features. No traffic values, split masks, "
+                    "validation entries, or test entries are included."
+                ),
+                "template_features": [
+                    "normalized_time_phase",
+                    "edge_count_undirected",
+                    "avg_shortest_path_hops",
+                    "diameter_hops",
+                    "long_path_ratio_gt8",
+                    "algebraic_connectivity_lambda2",
+                    "lambda2_delta_from_prev",
+                    "top_bottleneck_links",
+                    "bottleneck_top3_shortest_path_share",
+                    "rolling_edge_change_5",
+                ],
+            },
+            "texts": render_endogenous_text(stats),
+        },
+    )
     if args.write_template_endo:
         write_json(
             os.path.join(output_dir, "endo_texts_topo_template.json"),
@@ -416,7 +489,8 @@ def main():
     print("Wrote topology-only text data to:", output_dir)
     print("Time slices:", len(stats))
     print("Topology path:", args.topology_path)
-    print("Template endogenous written:", bool(args.write_template_endo))
+    print("Template endogenous path:", endo_output_path)
+    print("Debug template endogenous written:", bool(args.write_template_endo))
     print("Template exogenous written:", bool(args.write_template_exo))
 
 

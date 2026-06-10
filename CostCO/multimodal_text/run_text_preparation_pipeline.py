@@ -17,7 +17,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Run the multimodal text preparation pipeline in a strict order: "
-            "topology-only stats -> DeepSeek texts -> embeddings."
+            "topology-only stats/template endo -> DeepSeek exo -> embeddings."
         )
     )
     parser.add_argument(
@@ -68,13 +68,16 @@ def main():
             args.topology_path,
             "--output-dir",
             args.output_dir,
+            "--endo-output-path",
+            endo_path,
         ]
         run_command(command)
 
     if args.stage in ("deepseek", "all"):
-        if not os.path.exists(stats_path):
+        if not os.path.exists(endo_path):
             raise FileNotFoundError(
-                "Missing stats file: %s. Run --stage stats first." % stats_path
+                "Missing template endogenous text file: %s. Run --stage stats first."
+                % endo_path
             )
         command = [
             sys.executable,
@@ -82,21 +85,13 @@ def main():
             "--env-path",
             args.env_path,
             "--mode",
-            "both",
+            "exo",
             "--config-path",
             args.config_path,
-            "--stats-path",
-            stats_path,
-            "--endo-source",
-            args.endo_source,
-            "--endo-chunk-size",
-            str(args.endo_chunk_size),
             "--request-timeout",
             str(args.request_timeout),
             "--exo-output-path",
             exo_path,
-            "--endo-output-path",
-            endo_path,
         ]
         run_command(command)
 
