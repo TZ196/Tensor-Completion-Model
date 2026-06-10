@@ -105,6 +105,7 @@ def stage_flags(text_stage, flow_text_weight, graph_text_weight):
         "global_context_concat",
         "global_context_condenser",
         "global_joint_condenser",
+        "global_joint_condenser_only",
     ]
     return {
         "global_context_concat": is_global_context,
@@ -122,6 +123,9 @@ def stage_flags(text_stage, flow_text_weight, graph_text_weight):
             text_stage == "global_context_condenser"
         ),
         "global_joint_condenser": text_stage == "global_joint_condenser",
+        "global_joint_condenser_only": (
+            text_stage == "global_joint_condenser_only"
+        ),
         "contrastive_enabled": (
             flow_text_weight > 0.0 or graph_text_weight > 0.0
         ),

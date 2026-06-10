@@ -72,6 +72,7 @@ class MindTextFusionLayer(k.layers.Layer):
             "global_context_concat",
             "global_context_condenser",
             "global_joint_condenser",
+            "global_joint_condenser_only",
             "cross_attention",
             "semantic_gating",
             "segment_condenser",
@@ -184,6 +185,9 @@ class MindTextFusionLayer(k.layers.Layer):
         if self.stage == "global_joint_condenser":
             condensed = self._condense_joint(endo, exo_segments)
             return tf.concat([endo, condensed], axis=1)
+
+        if self.stage == "global_joint_condenser_only":
+            return self._condense_joint(endo, exo_segments)
 
         if self.stage == "segment_condenser":
             exo = self._condense_exo(endo, exo_segments)
