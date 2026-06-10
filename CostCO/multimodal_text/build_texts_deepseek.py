@@ -30,11 +30,6 @@ def read_text(path):
     raise last_error
 
 
-def read_json(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
 def write_json(path, value):
     directory = os.path.dirname(path)
     if directory and not os.path.exists(directory):
@@ -166,96 +161,6 @@ Configuration text:
     return system_prompt, user_prompt
 
 
-def build_endogenous_prompt(stats, endo_source, expected_count=None):
-    system_prompt = (
-        "You generate leakage-safe endogenous time-slice descriptions for a "
-        "satellite path-traffic tensor completion model. You must use only the "
-        "structured statistics provided."
-    )
-    if endo_source != "topo":
-        raise ValueError("Unsupported endo source: %s" % endo_source)
-    allowed = (
-        "Use topology fields only. Do not mention traffic counts, traffic "
-        "values, traffic trends, source IDs, destination IDs, training masks, "
-        "validation masks, test masks, or random masking."
-    )
-    source_name = "topology_statistics_only"
-
-    slim_stats = []
-    for item in stats:
-        base = {
-            "time_index": item["time_index"],
-            "normalized_time_phase": item["normalized_time_phase"],
-            "num_satellites": item["num_satellites"],
-            "edge_count_undirected": item["edge_count_undirected"],
-            "avg_degree": item["avg_degree"],
-            "is_connected": item["is_connected"],
-            "avg_shortest_path_hops": item["avg_shortest_path_hops"],
-            "shortest_path_variance": item["shortest_path_variance"],
-            "long_path_ratio_gt8": item["long_path_ratio_gt8"],
-            "diameter_hops": item["diameter_hops"],
-            "algebraic_connectivity_lambda2": item[
-                "algebraic_connectivity_lambda2"
-            ],
-            "lambda2_delta_from_prev": item["lambda2_delta_from_prev"],
-            "changed_edges_from_prev": item["changed_edges_from_prev"],
-            "rolling_edge_change_5": item["rolling_edge_change_5"],
-            "steps_since_major_reconfiguration": item[
-                "steps_since_major_reconfiguration"
-            ],
-            "top_bottleneck_links": item["top_bottleneck_links"],
-            "bottleneck_top3_shortest_path_share": item[
-                "bottleneck_top3_shortest_path_share"
-            ],
-        }
-        slim_stats.append(base)
-
-    if expected_count is None:
-        expected_count = len(slim_stats)
-
-    user_prompt = """
-Task:
-Generate one endogenous English paragraph for each time slice of a satellite
-path-traffic tensor completion experiment.
-
-Rules:
-1. %s
-2. Do not infer, add, or hallucinate facts.
-3. Keep wording stable, concise, and prediction-oriented.
-4. Each paragraph should be 55-90 words.
-5. Do not list every field mechanically. Prefer the most useful signals:
-   normalized phase, path length structure, lambda2, bottleneck links, and
-   topology-change context.
-6. Output valid JSON only. Do not wrap it in markdown fences.
-
-Required JSON format:
-{
-  "metadata": {
-    "source": "%s",
-    "text_generation_mode": "deepseek",
-    "num_time_slices": %d
-  },
-  "texts": [
-    {
-      "time_index": 0,
-      "endo_mode": "%s",
-      "text": "..."
-    }
-  ]
-}
-
-Structured statistics:
-%s
-""" % (
-        allowed,
-        source_name,
-        expected_count,
-        endo_source,
-        json.dumps(slim_stats, ensure_ascii=False, indent=2),
-    )
-    return system_prompt, user_prompt
-
-
 def generate_exogenous(args, env):
     config_text = read_text(args.config_path)
     system_prompt, user_prompt = build_exogenous_prompt(config_text)
@@ -274,162 +179,43 @@ def generate_exogenous(args, env):
     result.setdefault("metadata", {})
     result["metadata"].update({
         "source_config_path": args.config_path,
-            "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
     })
     write_json(args.exo_output_path, result)
     print("Saved DeepSeek exogenous text:", args.exo_output_path)
 
 
-def save_raw_response(output_path, prefix, response):
-    directory = os.path.dirname(output_path)
-    if directory and not os.path.exists(directory):
-        os.makedirs(directory)
-    raw_path = os.path.join(directory, prefix)
-    with open(raw_path, "w", encoding="utf-8") as f:
-        f.write(response)
-    return raw_path
-
-
-def merge_endogenous_chunks(chunks, endo_source, env, stats_path):
-    texts = []
-    for chunk in chunks:
-        texts.extend(chunk["texts"])
-    texts = sorted(texts, key=lambda item: int(item["time_index"]))
-    return {
-        "metadata": {
-            "source": "topology_statistics_only",
-            "text_generation_mode": "deepseek",
-            "num_time_slices": len(texts),
-            "stats_path": stats_path,
-            "generator_model": env.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-            "chunked_generation": True,
-        },
-        "texts": texts,
-    }
-
-
-def generate_endogenous(args, env):
-    stats_data = read_json(args.stats_path)
-    stats = stats_data["time_statistics"]
-    chunks = []
-    chunk_size = max(1, args.endo_chunk_size)
-    total_chunks = (len(stats) + chunk_size - 1) // chunk_size
-    print(
-        "Generating DeepSeek endogenous text in %d chunks "
-        "(chunk_size=%d, time_slices=%d)..." %
-        (total_chunks, chunk_size, len(stats)),
-        flush=True,
-    )
-    for start in range(0, len(stats), chunk_size):
-        chunk_stats = stats[start:start + chunk_size]
-        chunk_id = start // chunk_size + 1
-        end = start + len(chunk_stats) - 1
-        print(
-            "DeepSeek endogenous chunk %d/%d: time slices %d-%d, "
-            "requesting..." % (chunk_id, total_chunks, start, end),
-            flush=True,
-        )
-        system_prompt, user_prompt = build_endogenous_prompt(
-            chunk_stats,
-            args.endo_source,
-            expected_count=len(stats),
-        )
-        response = deepseek_chat(
-            env,
-            system_prompt,
-            user_prompt,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            request_timeout=args.request_timeout,
-        )
-        print(
-            "DeepSeek endogenous chunk %d/%d: response received, parsing..." %
-            (chunk_id, total_chunks),
-            flush=True,
-        )
-        try:
-            chunk = extract_json(response)
-        except json.JSONDecodeError:
-            raw_path = save_raw_response(
-                args.endo_output_path,
-                "endo_deepseek_bad_response_%03d_%03d.txt" %
-                (start, start + len(chunk_stats) - 1),
-                response,
-            )
-            raise ValueError(
-                "DeepSeek returned invalid JSON for endogenous time slices "
-                "%d-%d. Raw response saved to %s" %
-                (start, start + len(chunk_stats) - 1, raw_path)
-            )
-        if "texts" not in chunk:
-            raise ValueError("Endogenous DeepSeek JSON must contain texts")
-        print(
-            "DeepSeek endogenous chunk %d/%d: parsed %d texts." %
-            (chunk_id, total_chunks, len(chunk["texts"])),
-            flush=True,
-        )
-        chunks.append(chunk)
-
-    result = merge_endogenous_chunks(
-        chunks,
-        args.endo_source,
-        env,
-        args.stats_path,
-    )
-    write_json(args.endo_output_path, result)
-    print("Saved DeepSeek endogenous text:", args.endo_output_path)
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate endogenous/exogenous text with DeepSeek."
+        description=(
+            "Generate exogenous text segments with DeepSeek. Endogenous text "
+            "is generated deterministically by build_satellite_texts.py."
+        )
     )
     parser.add_argument("--env-path", default="deepseek.env")
     parser.add_argument(
         "--mode",
-        choices=["exo", "endo", "both"],
-        default="both",
+        choices=["exo"],
+        default="exo",
     )
     parser.add_argument(
         "--config-path",
         default="experiment_description.md",
     )
     parser.add_argument(
-        "--stats-path",
-        default="text_data/time_stats_topo_only.json",
-    )
-    parser.add_argument(
-        "--endo-source",
-        choices=["topo"],
-        default="topo",
-    )
-    parser.add_argument(
         "--exo-output-path",
         default="text_data/exo_text_segments.json",
-    )
-    parser.add_argument(
-        "--endo-output-path",
-        default="text_data/endo_texts.json",
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--request-timeout", type=int, default=300)
-    parser.add_argument(
-        "--endo-chunk-size",
-        type=int,
-        default=10,
-        help="Generate endogenous text in chunks to keep JSON valid.",
-    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     env = read_env(args.env_path)
-    if args.mode in ("exo", "both"):
-        generate_exogenous(args, env)
-    if args.mode in ("endo", "both"):
-        generate_endogenous(args, env)
+    generate_exogenous(args, env)
 
 
 if __name__ == "__main__":
