@@ -6,6 +6,11 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+DEFAULT_EMBEDDING_MODEL = os.path.join(
+    SCRIPT_DIR,
+    "models",
+    "all-MiniLM-L6-v2",
+)
 
 
 def run_command(command):
@@ -45,10 +50,19 @@ def parse_args():
     )
     parser.add_argument(
         "--embedding-model",
-        default="sentence-transformers/all-MiniLM-L6-v2",
+        default=DEFAULT_EMBEDDING_MODEL,
     )
     parser.add_argument("--embedding-batch-size", type=int, default=32)
     parser.add_argument("--embedding-local-files-only", action="store_true")
+    parser.add_argument(
+        "--allow-remote-embedding-model",
+        action="store_true",
+        help=(
+            "Allow SentenceTransformer to resolve the embedding model from "
+            "remote Hugging Face/cache. By default the local MiniLM directory "
+            "under CostCO/multimodal_text/models is used offline."
+        ),
+    )
     parser.add_argument("--endo-chunk-size", type=int, default=10)
     parser.add_argument("--request-timeout", type=int, default=300)
     return parser.parse_args()
@@ -117,7 +131,9 @@ def main():
             "--batch-size",
             str(args.embedding_batch_size),
         ]
-        if args.embedding_local_files_only:
+        if args.allow_remote_embedding_model:
+            command.append("--allow-remote-model")
+        if args.embedding_local_files_only or not args.allow_remote_embedding_model:
             command.append("--local-files-only")
         run_command(command)
 

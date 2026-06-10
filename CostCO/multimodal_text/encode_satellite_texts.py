@@ -5,6 +5,10 @@ import os
 import numpy as np
 
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_MODEL_PATH = os.path.join(SCRIPT_DIR, "models", "all-MiniLM-L6-v2")
+
+
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -38,10 +42,9 @@ def encode_sentence_transformer(texts, model_name, batch_size, normalize,
     except Exception as exc:
         raise RuntimeError(
             "Failed to load SentenceTransformer model '%s'. If the server "
-            "cannot access Hugging Face or has SSL certificate issues, "
-            "download all-MiniLM-L6-v2 on another machine, copy the model "
-            "directory to the server, and pass that local path with "
-            "--model-name /path/to/all-MiniLM-L6-v2 --local-files-only."
+            "cannot access Hugging Face or has SSL certificate issues, copy "
+            "all-MiniLM-L6-v2 to CostCO/multimodal_text/models/all-MiniLM-L6-v2 "
+            "or pass another local path with --model-name."
             % model_name
         ) from exc
     embeddings = model.encode(
@@ -74,13 +77,24 @@ def parse_args():
     parser.add_argument("--text-dir", default="text_data")
     parser.add_argument(
         "--model-name",
-        default="sentence-transformers/all-MiniLM-L6-v2",
+        default=DEFAULT_MODEL_PATH,
     )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument(
         "--local-files-only",
         action="store_true",
-        help="Load the SentenceTransformer model only from local files.",
+        help=(
+            "Load the SentenceTransformer model only from local files. This is "
+            "the default behavior unless --allow-remote-model is passed."
+        ),
+    )
+    parser.add_argument(
+        "--allow-remote-model",
+        action="store_true",
+        help=(
+            "Allow SentenceTransformer to resolve the model from remote "
+            "Hugging Face/cache instead of forcing offline local loading."
+        ),
     )
     parser.add_argument(
         "--no-normalize",
@@ -106,19 +120,20 @@ def main():
     exo_texts = [item["text"] for item in exo_records]
 
     normalize = not args.no_normalize
+    local_files_only = args.local_files_only or not args.allow_remote_model
     endo_embeddings = encode_sentence_transformer(
         endo_texts,
         args.model_name,
         args.batch_size,
         normalize,
-        args.local_files_only,
+        local_files_only,
     )
     exo_embeddings = encode_sentence_transformer(
         exo_texts,
         args.model_name,
         args.batch_size,
         normalize,
-        args.local_files_only,
+        local_files_only,
     )
 
     np.save(
@@ -140,7 +155,7 @@ def main():
             "normalize": normalize,
             "normalization": "l2" if normalize else "none",
             "batch_size": args.batch_size,
-            "local_files_only": bool(args.local_files_only),
+            "local_files_only": bool(local_files_only),
             "text_generation_mode": endo.get(
                 "metadata",
                 {},
