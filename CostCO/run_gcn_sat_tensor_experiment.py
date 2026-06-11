@@ -3,6 +3,7 @@ import json
 import os
 from pprint import pprint
 
+import numpy as np
 from tensorflow import keras as k
 
 from gcn_costco_model import (
@@ -20,11 +21,91 @@ from run_sat_tensor_experiment import (
 )
 
 
+NODE_GROUPS = {
+    "local": [0, 1, 2, 3],
+    "global": [4, 5, 6, 7],
+    "dynamic_path": [8, 9],
+}
+
+TIME_GROUPS = {
+    "local": [0, 1, 2, 3],
+    "global": [4, 5, 6, 7],
+    "dynamic_path": [8, 9],
+}
+
+
+def select_feature_indices(group, groups):
+    if group == "full":
+        return None
+    if group in groups:
+        return groups[group]
+    if group == "local_global":
+        return groups["local"] + groups["global"]
+    raise ValueError("Unsupported structural feature group: %s" % group)
+
+
+def feature_quality_report(node_features, time_features, node_names, time_names):
+    node_flat = node_features.reshape(-1, node_features.shape[-1])
+    node_std = node_flat.std(axis=0)
+    time_std = time_features.std(axis=0)
+    return {
+        "node_finite": bool(np.isfinite(node_features).all()),
+        "time_finite": bool(np.isfinite(time_features).all()),
+        "node_std": node_std.astype("float64").tolist(),
+        "time_std": time_std.astype("float64").tolist(),
+        "near_constant_node_features": [
+            node_names[idx] for idx, value in enumerate(node_std)
+            if value < 1e-6
+        ],
+        "near_constant_time_features": [
+            time_names[idx] for idx, value in enumerate(time_std)
+            if value < 1e-6
+        ],
+    }
+
+
+def load_mode_struct_features(path, group, seed, shuffle_features=False):
+    if group == "none":
+        return None, None, [], [], {}
+    data = np.load(path, allow_pickle=True)
+    node_features = data["node_features"].astype("float32")
+    time_features = data["time_features"].astype("float32")
+    node_names = data["node_feature_names"].astype(str).tolist()
+    time_names = data["time_feature_names"].astype(str).tolist()
+
+    node_idx = select_feature_indices(group, NODE_GROUPS)
+    time_idx = select_feature_indices(group, TIME_GROUPS)
+    if node_idx is not None:
+        node_features = node_features[:, :, node_idx]
+        node_names = [node_names[idx] for idx in node_idx]
+    if time_idx is not None:
+        time_features = time_features[:, time_idx]
+        time_names = [time_names[idx] for idx in time_idx]
+
+    if shuffle_features:
+        rng = np.random.RandomState(seed)
+        flat = node_features.reshape(-1, node_features.shape[-1])
+        order = rng.permutation(flat.shape[0])
+        node_features = flat[order].reshape(node_features.shape)
+        time_order = rng.permutation(time_features.shape[0])
+        time_features = time_features[time_order]
+
+    quality = feature_quality_report(
+        node_features,
+        time_features,
+        node_names,
+        time_names,
+    )
+    if not quality["node_finite"] or not quality["time_finite"]:
+        raise ValueError("Structural features contain NaN or Inf values")
+    return node_features, time_features, node_names, time_names, quality
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run GCN-CoSTCo tensor completion with adjacency fusion."
     )
-    parser.add_argument("--tensor-path", default="sat_path_bytes_tensor.npy")
+    parser.add_argument("--tensor-path", default="sat_path_bytes_mb_tensor.npy")
     parser.add_argument(
         "--topology-path",
         default="sat_connectivity_tensor_dynamic_60s_1000ms.npz",
@@ -37,6 +118,30 @@ def parse_args():
     parser.add_argument("--nc", type=int, default=64)
     parser.add_argument("--node-dim", type=int, default=32)
     parser.add_argument("--gcn-dim", type=int, default=64)
+    parser.add_argument("--mode-struct-path", default="mode_struct_features.npz")
+    parser.add_argument(
+        "--struct-feature-group",
+        choices=[
+            "none",
+            "local",
+            "global",
+            "dynamic_path",
+            "local_global",
+            "full",
+        ],
+        default="none",
+    )
+    parser.add_argument("--shuffle-struct-features", action="store_true")
+    parser.add_argument("--time-conditioned-modes", action="store_true")
+    parser.add_argument("--structural-hidden-dim", type=int, default=64)
+    parser.add_argument("--structural-align-dim", type=int, default=64)
+    parser.add_argument("--structural-beta", type=float, default=0.1)
+    parser.add_argument("--structural-alpha", type=float, default=0.1)
+    parser.add_argument("--source-align-weight", type=float, default=0.0)
+    parser.add_argument("--destination-align-weight", type=float, default=0.0)
+    parser.add_argument("--time-align-weight", type=float, default=0.0)
+    parser.add_argument("--alignment-temperature", type=float, default=0.2)
+    parser.add_argument("--temporal-delta", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -123,12 +228,45 @@ def main():
     topology = load_connectivity_tensor(args.topology_path, shape)
     print("Topology shape:", topology.shape)
     print("Topology branch: temporal GCN")
+    (
+        node_struct_features,
+        time_struct_features,
+        node_feature_names,
+        time_feature_names,
+        struct_feature_quality,
+    ) = load_mode_struct_features(
+        args.mode_struct_path,
+        args.struct_feature_group,
+        args.seed,
+        shuffle_features=args.shuffle_struct_features,
+    )
+    if node_struct_features is not None:
+        print("Mode structural node features:", node_struct_features.shape)
+        print("Mode structural time features:", time_struct_features.shape)
+        print("Node structural feature names:", node_feature_names)
+        print("Time structural feature names:", time_feature_names)
+        print("Node structural feature std:", struct_feature_quality["node_std"])
+        print("Time structural feature std:", struct_feature_quality["time_std"])
+        if struct_feature_quality["near_constant_node_features"]:
+            print(
+                "Near-constant node structural features:",
+                struct_feature_quality["near_constant_node_features"],
+            )
+        if struct_feature_quality["near_constant_time_features"]:
+            print(
+                "Near-constant time structural features:",
+                struct_feature_quality["near_constant_time_features"],
+            )
+    else:
+        print("Mode structural features: disabled")
 
     target_scale = get_target_scale(train_values, args.target_normalization)
     train_targets = train_values / target_scale
     val_targets = val_values / target_scale
+    output_bias_init = float(np.mean(train_targets))
     print("Target normalization:", args.target_normalization)
     print("Target scale:", target_scale)
+    print("Output bias init:", output_bias_init)
     print("Metrics scale: original target values")
 
     model = create_gcn_costco(
@@ -138,6 +276,19 @@ def main():
         nc=args.nc,
         node_dim=args.node_dim,
         gcn_dim=args.gcn_dim,
+        node_struct_features=node_struct_features,
+        time_struct_features=time_struct_features,
+        structural_hidden_dim=args.structural_hidden_dim,
+        structural_align_dim=args.structural_align_dim,
+        structural_beta=args.structural_beta,
+        structural_alpha=args.structural_alpha,
+        source_align_weight=args.source_align_weight,
+        destination_align_weight=args.destination_align_weight,
+        time_align_weight=args.time_align_weight,
+        alignment_temperature=args.alignment_temperature,
+        temporal_delta=args.temporal_delta,
+        time_conditioned_modes=args.time_conditioned_modes,
+        output_bias_init=output_bias_init,
     )
     compile_gcn_costco(model, lr=args.lr)
     model.fit(
@@ -182,6 +333,22 @@ def main():
             "fusion": "costco_kpi_branch_plus_temporal_gcn_branch",
             "topology_input": "sat_connectivity_adjacency",
             "topology_shape": [int(v) for v in topology.shape],
+            "mode_struct_path": args.mode_struct_path,
+            "struct_feature_group": args.struct_feature_group,
+            "shuffle_struct_features": args.shuffle_struct_features,
+            "time_conditioned_modes": args.time_conditioned_modes,
+            "node_struct_feature_names": node_feature_names,
+            "time_struct_feature_names": time_feature_names,
+            "struct_feature_quality": struct_feature_quality,
+            "structural_hidden_dim": args.structural_hidden_dim,
+            "structural_align_dim": args.structural_align_dim,
+            "structural_beta": args.structural_beta,
+            "structural_alpha": args.structural_alpha,
+            "source_align_weight": args.source_align_weight,
+            "destination_align_weight": args.destination_align_weight,
+            "time_align_weight": args.time_align_weight,
+            "alignment_temperature": args.alignment_temperature,
+            "temporal_delta": args.temporal_delta,
             "rank": args.rank,
             "nc": args.nc,
             "node_dim": args.node_dim,
@@ -191,6 +358,7 @@ def main():
             "batch_size": args.batch_size,
             "target_normalization": args.target_normalization,
             "target_scale": target_scale,
+            "output_bias_init": output_bias_init,
             "metrics_scale": "original",
             "seed": args.seed,
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",

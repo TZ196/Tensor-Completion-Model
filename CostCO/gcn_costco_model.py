@@ -5,6 +5,321 @@ from tensorflow import keras as k
 from costco_model import mae, nmae, nrmse, rmse, transform_indices
 
 
+class ModeWiseStructuralLayer(k.layers.Layer):
+    """Inject topology-derived structure into CoSTCo source/dest/time modes."""
+
+    def __init__(self, node_features=None, time_features=None, rank=50,
+                 hidden_dim=64, align_dim=64, beta=0.1, alpha_init=0.1,
+                 source_align_weight=0.0, destination_align_weight=0.0,
+                 time_align_weight=0.0, alignment_temperature=0.2,
+                 temporal_delta=2, **kwargs):
+        super().__init__(**kwargs)
+        self.rank = int(rank)
+        self.hidden_dim = int(hidden_dim)
+        self.align_dim = int(align_dim)
+        self.beta = float(beta)
+        self.alpha_init = float(alpha_init)
+        self.source_align_weight = float(source_align_weight)
+        self.destination_align_weight = float(destination_align_weight)
+        self.time_align_weight = float(time_align_weight)
+        self.alignment_temperature = float(alignment_temperature)
+        self.temporal_delta = int(temporal_delta)
+
+        self.structural_enabled = (
+            node_features is not None and time_features is not None
+        )
+        if (node_features is None) != (time_features is None):
+            raise ValueError(
+                "node_features and time_features must be provided together"
+            )
+        if self.structural_enabled:
+            node = np.asarray(node_features, dtype="float32")
+            time = np.asarray(time_features, dtype="float32")
+            if node.ndim != 3:
+                raise ValueError("node_features must have shape [time, node, dim]")
+            if time.ndim != 2:
+                raise ValueError("time_features must have shape [time, dim]")
+            if node.shape[0] != time.shape[0]:
+                raise ValueError("node/time structural features must share time length")
+            self.node_features = tf.constant(node, dtype=tf.float32)
+            self.time_features = tf.constant(time, dtype=tf.float32)
+            self.time_len = int(node.shape[0])
+            self.node_count = int(node.shape[1])
+            self.node_feature_dim = int(node.shape[2])
+            self.time_feature_dim = int(time.shape[1])
+        else:
+            self.node_features = None
+            self.time_features = None
+            self.time_len = 0
+            self.node_count = 0
+            self.node_feature_dim = 0
+            self.time_feature_dim = 0
+
+        self.source_time_dense_1 = k.layers.Dense(hidden_dim, activation="gelu")
+        self.source_time_dense_2 = k.layers.Dense(rank)
+        self.dest_time_dense_1 = k.layers.Dense(hidden_dim, activation="gelu")
+        self.dest_time_dense_2 = k.layers.Dense(rank)
+        self.source_norm = k.layers.LayerNormalization()
+        self.dest_norm = k.layers.LayerNormalization()
+        self.time_norm = k.layers.LayerNormalization()
+
+        self.node_proj_1 = k.layers.Dense(hidden_dim)
+        self.node_proj_norm_1 = k.layers.LayerNormalization()
+        self.node_proj_act = k.layers.Activation("gelu")
+        self.node_proj_2 = k.layers.Dense(rank)
+        self.node_proj_norm_2 = k.layers.LayerNormalization()
+        self.source_adapter = k.layers.Dense(rank)
+        self.dest_adapter = k.layers.Dense(rank)
+        self.time_proj_1 = k.layers.Dense(hidden_dim)
+        self.time_proj_norm_1 = k.layers.LayerNormalization()
+        self.time_proj_act = k.layers.Activation("gelu")
+        self.time_proj_2 = k.layers.Dense(rank)
+        self.time_proj_norm_2 = k.layers.LayerNormalization()
+
+        self.source_gate = k.layers.Dense(rank, activation="sigmoid")
+        self.dest_gate = k.layers.Dense(rank, activation="sigmoid")
+        self.time_gate = k.layers.Dense(rank, activation="sigmoid")
+        self.source_fuse_norm = k.layers.LayerNormalization()
+        self.dest_fuse_norm = k.layers.LayerNormalization()
+        self.time_fuse_norm = k.layers.LayerNormalization()
+
+        self.source_mode_proj = k.layers.Dense(align_dim)
+        self.source_struct_proj = k.layers.Dense(align_dim)
+        self.dest_mode_proj = k.layers.Dense(align_dim)
+        self.dest_struct_proj = k.layers.Dense(align_dim)
+        self.time_mode_proj = k.layers.Dense(align_dim)
+        self.time_struct_proj = k.layers.Dense(align_dim)
+
+    def build(self, input_shape):
+        if self.structural_enabled:
+            def init_alpha(value):
+                value = np.clip(value / 0.2, 1e-4, 1.0 - 1e-4)
+                return float(np.log(value / (1.0 - value)))
+
+            initializer = k.initializers.Constant(init_alpha(self.alpha_init))
+            self.source_alpha_logit = self.add_weight(
+                name="source_alpha_logit",
+                shape=(),
+                initializer=initializer,
+                trainable=True,
+            )
+            self.dest_alpha_logit = self.add_weight(
+                name="destination_alpha_logit",
+                shape=(),
+                initializer=initializer,
+                trainable=True,
+            )
+            self.time_alpha_logit = self.add_weight(
+                name="time_alpha_logit",
+                shape=(),
+                initializer=initializer,
+                trainable=True,
+            )
+        super().build(input_shape)
+
+    def _project_node(self, features):
+        x = self.node_proj_1(features)
+        x = self.node_proj_norm_1(x)
+        x = self.node_proj_act(x)
+        x = self.node_proj_2(x)
+        return self.node_proj_norm_2(x)
+
+    def _project_time(self, features):
+        x = self.time_proj_1(features)
+        x = self.time_proj_norm_1(x)
+        x = self.time_proj_act(x)
+        x = self.time_proj_2(x)
+        return self.time_proj_norm_2(x)
+
+    def _masked_infonce(self, left, right, mask=None):
+        left = tf.math.l2_normalize(left, axis=-1)
+        right = tf.math.l2_normalize(right, axis=-1)
+        logits = tf.matmul(left, right, transpose_b=True)
+        logits = logits / self.alignment_temperature
+        if mask is not None:
+            logits = tf.where(mask, tf.ones_like(logits) * -1e9, logits)
+        labels = tf.range(tf.shape(logits)[0], dtype=tf.int32)
+        loss_a = tf.keras.losses.sparse_categorical_crossentropy(
+            labels, logits, from_logits=True
+        )
+        loss_b = tf.keras.losses.sparse_categorical_crossentropy(
+            labels, tf.transpose(logits), from_logits=True
+        )
+        return 0.5 * (tf.reduce_mean(loss_a) + tf.reduce_mean(loss_b))
+
+    def _aggregate_by_key(self, left, right, keys):
+        unique_keys, segment_ids = tf.unique(keys)
+        count = tf.shape(unique_keys)[0]
+        left = tf.math.unsorted_segment_mean(left, segment_ids, count)
+        right = tf.math.unsorted_segment_mean(right, segment_ids, count)
+        return left, right, unique_keys
+
+    def _add_entity_alignment(self, mode_x, struct_x, keys, weight,
+                              mode_proj, struct_proj, metric_prefix):
+        if weight <= 0.0:
+            return
+        mode_x, struct_x, unique_keys = self._aggregate_by_key(
+            mode_x, struct_x, keys
+        )
+        entity_ids = unique_keys // self.time_len
+        entity_times = unique_keys % self.time_len
+        same_entity = entity_ids[:, None] == entity_ids[None, :]
+        time_dist = tf.abs(entity_times[:, None] - entity_times[None, :])
+        near_time = time_dist <= self.temporal_delta
+        diagonal = tf.eye(tf.shape(unique_keys)[0], dtype=tf.bool)
+        mask = tf.logical_and(
+            tf.logical_and(same_entity, near_time),
+            tf.logical_not(diagonal),
+        )
+        loss = self._masked_infonce(
+            mode_proj(mode_x),
+            struct_proj(struct_x),
+            mask=mask,
+        )
+        self.add_loss(weight * loss)
+        self.add_metric(
+            loss,
+            name="%s_struct_align_loss" % metric_prefix,
+            aggregation="mean",
+        )
+        self.add_metric(
+            weight * loss,
+            name="%s_struct_align_weighted_loss" % metric_prefix,
+            aggregation="mean",
+        )
+
+    def _add_time_alignment(self, mode_x, struct_x, times):
+        if self.time_align_weight <= 0.0:
+            return
+        mode_x, struct_x, unique_times = self._aggregate_by_key(
+            mode_x, struct_x, times
+        )
+        dist = tf.abs(unique_times[:, None] - unique_times[None, :])
+        diagonal = tf.eye(tf.shape(unique_times)[0], dtype=tf.bool)
+        near = tf.logical_and(dist <= self.temporal_delta, tf.logical_not(diagonal))
+        loss = self._masked_infonce(
+            self.time_mode_proj(mode_x),
+            self.time_struct_proj(struct_x),
+            mask=near,
+        )
+        self.add_loss(self.time_align_weight * loss)
+        self.add_metric(
+            loss,
+            name="time_struct_align_loss",
+            aggregation="mean",
+        )
+        self.add_metric(
+            self.time_align_weight * loss,
+            name="time_struct_align_weighted_loss",
+            aggregation="mean",
+        )
+
+    def call(self, inputs):
+        src_embed, dst_embed, time_embed, src_input, dst_input, time_input = inputs
+        src_embed = tf.squeeze(src_embed, axis=1)
+        dst_embed = tf.squeeze(dst_embed, axis=1)
+        time_embed = tf.squeeze(time_embed, axis=1)
+        src = tf.cast(tf.reshape(src_input, [-1]), tf.int32)
+        dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
+        time = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
+
+        source_delta = self.source_time_dense_2(
+            self.source_time_dense_1(tf.concat([src_embed, time_embed], axis=-1))
+        )
+        dest_delta = self.dest_time_dense_2(
+            self.dest_time_dense_1(tf.concat([dst_embed, time_embed], axis=-1))
+        )
+        source_mode = self.source_norm(src_embed + self.beta * source_delta)
+        dest_mode = self.dest_norm(dst_embed + self.beta * dest_delta)
+        time_mode = self.time_norm(time_embed)
+
+        if not self.structural_enabled:
+            return [
+                source_mode[:, None, :],
+                dest_mode[:, None, :],
+                time_mode[:, None, :],
+            ]
+
+        node_t = tf.gather(self.node_features, time)
+        src_struct_raw = tf.gather_nd(
+            node_t,
+            tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), src], axis=1),
+        )
+        dst_struct_raw = tf.gather_nd(
+            node_t,
+            tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), dst], axis=1),
+        )
+        time_struct_raw = tf.gather(self.time_features, time)
+
+        src_base = self._project_node(src_struct_raw)
+        dst_base = self._project_node(dst_struct_raw)
+        src_struct = src_base + 0.1 * self.source_adapter(src_base)
+        dst_struct = dst_base + 0.1 * self.dest_adapter(dst_base)
+        time_struct = self._project_time(time_struct_raw)
+
+        source_alpha = 0.2 * tf.sigmoid(self.source_alpha_logit)
+        dest_alpha = 0.2 * tf.sigmoid(self.dest_alpha_logit)
+        time_alpha = 0.2 * tf.sigmoid(self.time_alpha_logit)
+        source_gate = self.source_gate(tf.concat([source_mode, src_struct], axis=-1))
+        dest_gate = self.dest_gate(tf.concat([dest_mode, dst_struct], axis=-1))
+        time_gate = self.time_gate(tf.concat([time_mode, time_struct], axis=-1))
+
+        source_out = self.source_fuse_norm(
+            source_mode + source_alpha * source_gate * src_struct
+        )
+        dest_out = self.dest_fuse_norm(
+            dest_mode + dest_alpha * dest_gate * dst_struct
+        )
+        time_out = self.time_fuse_norm(
+            time_mode + time_alpha * time_gate * time_struct
+        )
+
+        source_keys = src * self.time_len + time
+        dest_keys = dst * self.time_len + time
+        self._add_entity_alignment(
+            source_mode,
+            src_struct,
+            source_keys,
+            self.source_align_weight,
+            self.source_mode_proj,
+            self.source_struct_proj,
+            "source",
+        )
+        self._add_entity_alignment(
+            dest_mode,
+            dst_struct,
+            dest_keys,
+            self.destination_align_weight,
+            self.dest_mode_proj,
+            self.dest_struct_proj,
+            "destination",
+        )
+        self._add_time_alignment(time_mode, time_struct, time)
+
+        return [
+            source_out[:, None, :],
+            dest_out[:, None, :],
+            time_out[:, None, :],
+        ]
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "rank": self.rank,
+            "hidden_dim": self.hidden_dim,
+            "align_dim": self.align_dim,
+            "beta": self.beta,
+            "alpha_init": self.alpha_init,
+            "source_align_weight": self.source_align_weight,
+            "destination_align_weight": self.destination_align_weight,
+            "time_align_weight": self.time_align_weight,
+            "alignment_temperature": self.alignment_temperature,
+            "temporal_delta": self.temporal_delta,
+            "structural_enabled": self.structural_enabled,
+        })
+        return config
+
+
 class TemporalGCNPairLayer(k.layers.Layer):
     """Encode source/destination nodes with A_t selected by time index."""
 
@@ -59,10 +374,11 @@ class TemporalGCNPairLayer(k.layers.Layer):
         dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
         time = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
 
-        adjacency = tf.gather(self.topology, time)
+        unique_time, inverse_time = tf.unique(time)
+        adjacency = tf.gather(self.topology, unique_time)
         node_features = tf.broadcast_to(
             self.node_embeddings[None, :, :],
-            [tf.shape(time)[0], self.node_count, self.node_dim],
+            [tf.shape(unique_time)[0], self.node_count, self.node_dim],
         )
 
         hidden = tf.matmul(adjacency, node_features)
@@ -71,6 +387,7 @@ class TemporalGCNPairLayer(k.layers.Layer):
         hidden = tf.matmul(adjacency, hidden)
         hidden = tf.matmul(hidden, self.gcn_kernel_2)
         hidden = tf.nn.relu(hidden)
+        hidden = tf.gather(hidden, inverse_time)
 
         batch_ids = tf.range(tf.shape(time)[0], dtype=tf.int32)
         src_hidden = tf.gather_nd(hidden, tf.stack([batch_ids, src], axis=1))
@@ -98,7 +415,13 @@ class TemporalGCNPairLayer(k.layers.Layer):
 
 
 def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
-                      gcn_dim=64):
+                      gcn_dim=64, node_struct_features=None,
+                      time_struct_features=None, structural_hidden_dim=64,
+                      structural_align_dim=64, structural_beta=0.1,
+                      structural_alpha=0.1, source_align_weight=0.0,
+                      destination_align_weight=0.0, time_align_weight=0.0,
+                      alignment_temperature=0.2, temporal_delta=2,
+                      time_conditioned_modes=False, output_bias_init=0.0):
     """Create CoSTCo with a trainable temporal GCN topology branch.
 
     Inputs are still source, destination, and time indices. The GCN branch uses
@@ -123,6 +446,33 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
         )(inputs[i])
         for i in range(len(shape))
     ]
+    if (
+        time_conditioned_modes or
+        node_struct_features is not None or
+        time_struct_features is not None
+    ):
+        embeds = ModeWiseStructuralLayer(
+            node_features=node_struct_features,
+            time_features=time_struct_features,
+            rank=rank,
+            hidden_dim=structural_hidden_dim,
+            align_dim=structural_align_dim,
+            beta=structural_beta,
+            alpha_init=structural_alpha,
+            source_align_weight=source_align_weight,
+            destination_align_weight=destination_align_weight,
+            time_align_weight=time_align_weight,
+            alignment_temperature=alignment_temperature,
+            temporal_delta=temporal_delta,
+            name="mode_wise_structural_alignment",
+        )([
+            embeds[0],
+            embeds[1],
+            embeds[2],
+            inputs[0],
+            inputs[1],
+            inputs[2],
+        ])
 
     kpi_x = k.layers.Concatenate(axis=1, name="kpi_mode_concat")(embeds)
     kpi_x = k.layers.Reshape(
@@ -168,9 +518,12 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
         activation="relu",
         name="fusion_dense_2",
     )(fused)
-    output = k.layers.Dense(1, activation="relu", name="traffic_output")(
-        fused
-    )
+    output = k.layers.Dense(
+        1,
+        activation=None,
+        bias_initializer=k.initializers.Constant(output_bias_init),
+        name="traffic_output",
+    )(fused)
     return k.Model(inputs=inputs, outputs=output, name="GCN_CoSTCo")
 
 
