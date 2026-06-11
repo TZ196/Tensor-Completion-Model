@@ -109,9 +109,10 @@ def parse_args():
     parser.add_argument("--temporal-delta", type=int, default=2)
     parser.add_argument("--flow-text-loss-weight", type=float, default=0.0)
     parser.add_argument("--graph-text-loss-weight", type=float, default=0.0)
-    parser.add_argument("--condenser-alpha", type=float, default=0.5)
+    parser.add_argument("--condenser-alpha", type=float, default=1.0)
     parser.add_argument("--condenser-epsilon", type=float, default=0.05)
     parser.add_argument("--condenser-loss-weight", type=float, default=0.0)
+    parser.add_argument("--condenser-mu", type=float, default=0.5)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -239,6 +240,7 @@ def main():
         condenser_alpha=args.condenser_alpha,
         condenser_epsilon=args.condenser_epsilon,
         condenser_loss_weight=args.condenser_loss_weight,
+        condenser_mu=args.condenser_mu,
         output_bias_init=output_bias_init,
     )
     compile_mindtext_gcn_costco(model, lr=args.lr)
@@ -329,6 +331,7 @@ def main():
             "condenser_alpha": args.condenser_alpha,
             "condenser_epsilon": args.condenser_epsilon,
             "condenser_loss_weight": args.condenser_loss_weight,
+            "condenser_mu": args.condenser_mu,
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
             **flags,

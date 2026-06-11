@@ -38,9 +38,10 @@ def create_mindtext_gcn_costco(shape, topology, endo_embeddings,
                                temporal_delta=2,
                                flow_text_loss_weight=0.0,
                                graph_text_loss_weight=0.0,
-                               condenser_alpha=0.5,
+                               condenser_alpha=1.0,
                                condenser_epsilon=0.05,
                                condenser_loss_weight=0.0,
+                               condenser_mu=0.5,
                                output_bias_init=0.0):
     shape = list(shape)
     if len(shape) != 3:
@@ -103,6 +104,7 @@ def create_mindtext_gcn_costco(shape, topology, endo_embeddings,
         condenser_alpha=condenser_alpha,
         condenser_epsilon=condenser_epsilon,
         condenser_loss_weight=condenser_loss_weight,
+        condenser_mu=condenser_mu,
         name="mindtext_fusion",
     )(inputs[2])
     text_x = create_text_projection(

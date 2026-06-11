@@ -56,8 +56,9 @@ class MindTextFusionLayer(k.layers.Layer):
     """Fuse endogenous and exogenous text with staged MindTS-style options."""
 
     def __init__(self, endo_embeddings, exo_embeddings, stage="concat",
-                 hidden_dim=128, condenser_alpha=0.5,
+                 hidden_dim=128, condenser_alpha=1.0,
                  condenser_epsilon=0.05, condenser_loss_weight=0.0,
+                 condenser_mu=0.5,
                  **kwargs):
         super().__init__(**kwargs)
         endo = _as_2d_float32("endo_embeddings", endo_embeddings)
@@ -87,6 +88,9 @@ class MindTextFusionLayer(k.layers.Layer):
         self.condenser_alpha = float(condenser_alpha)
         self.condenser_epsilon = float(condenser_epsilon)
         self.condenser_loss_weight = float(condenser_loss_weight)
+        self.condenser_mu = float(condenser_mu)
+        if not 0.0 < self.condenser_mu < 1.0:
+            raise ValueError("condenser_mu must be in (0, 1)")
         self.endo_embeddings = tf.constant(endo, dtype=tf.float32)
         self.exo_embeddings = tf.constant(exo, dtype=tf.float32)
         self.exo_pooled = tf.constant(np.mean(exo, axis=0), dtype=tf.float32)
@@ -100,7 +104,14 @@ class MindTextFusionLayer(k.layers.Layer):
         self.ffn_2 = k.layers.Dense(hidden_dim, name="text_ffn_2")
         self.gate_dense = k.layers.Dense(hidden_dim, activation="sigmoid",
                                          name="semantic_gate")
-        self.segment_score = k.layers.Dense(1, name="segment_score")
+        mu = np.clip(self.condenser_mu, 1e-4, 1.0 - 1e-4)
+        self.segment_score = k.layers.Dense(
+            1,
+            bias_initializer=k.initializers.Constant(
+                float(np.log(mu / (1.0 - mu)))
+            ),
+            name="segment_retention_logit",
+        )
 
     def _cross_attention(self, endo, exo_segments):
         query = self.query_dense(endo)
@@ -126,12 +137,16 @@ class MindTextFusionLayer(k.layers.Layer):
         )
         score_input = tf.concat([context_expanded, segments], axis=-1)
         logits = tf.squeeze(self.segment_score(score_input), axis=-1)
-        weights = tf.nn.softmax(logits, axis=-1)
 
         eps = tf.cast(self.condenser_epsilon, tf.float32)
-        uniform = tf.ones_like(weights) / tf.cast(segment_count, tf.float32)
-        smooth_weights = (1.0 - eps) * weights + eps * uniform
-        condensed = segments * smooth_weights[:, :, None]
+        psi = tf.sigmoid(logits)
+        psi = tf.clip_by_value(psi, eps, 1.0 - eps)
+        normalizer = tf.maximum(
+            tf.reduce_sum(psi, axis=-1, keepdims=True),
+            eps,
+        )
+        weights = psi / normalizer
+        condensed = segments * weights[:, :, None]
         pooled = tf.reduce_sum(condensed, axis=1)
         mixed = (
             (1.0 - self.condenser_alpha) * original +
@@ -139,14 +154,12 @@ class MindTextFusionLayer(k.layers.Layer):
         )
 
         if self.condenser_loss_weight > 0.0:
-            kl = tf.reduce_mean(
-                tf.reduce_sum(
-                    smooth_weights * tf.math.log(
-                        (smooth_weights + 1e-8) / (uniform + 1e-8)
-                    ),
-                    axis=-1,
-                )
+            mu = tf.cast(self.condenser_mu, tf.float32)
+            kl_terms = (
+                psi * tf.math.log(psi / mu) +
+                (1.0 - psi) * tf.math.log((1.0 - psi) / (1.0 - mu))
             )
+            kl = tf.reduce_mean(tf.reduce_sum(kl_terms, axis=-1))
             self.add_loss(self.condenser_loss_weight * kl)
         return mixed
 
@@ -213,6 +226,7 @@ class MindTextFusionLayer(k.layers.Layer):
             "condenser_alpha": self.condenser_alpha,
             "condenser_epsilon": self.condenser_epsilon,
             "condenser_loss_weight": self.condenser_loss_weight,
+            "condenser_mu": self.condenser_mu,
         })
         return config
 

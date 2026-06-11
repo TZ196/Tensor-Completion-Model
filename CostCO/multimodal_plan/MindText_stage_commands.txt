@@ -103,8 +103,9 @@ Stage 3c: Add segment-level content condenser
 ---------------------------------------------
 Use the Stage 2 command and change/add:
   --text-stage segment_condenser \
-  --condenser-alpha 0.5 \
+  --condenser-alpha 1.0 \
   --condenser-epsilon 0.05 \
+  --condenser-mu 0.5 \
   --condenser-loss-weight 1e-4
 
 Note: segment_condenser still uses cross-attention after condensing exogenous
@@ -114,8 +115,9 @@ Stage 3d: Add global-context condenser without cross-attention
 --------------------------------------------------------------
 Use the Stage 2 command and change/add:
   --text-stage global_context_condenser \
-  --condenser-alpha 0.5 \
+  --condenser-alpha 1.0 \
   --condenser-epsilon 0.05 \
+  --condenser-mu 0.5 \
   --condenser-loss-weight 1e-4
 
 This stage condenses exogenous segments and concatenates them with endogenous
@@ -125,8 +127,9 @@ Stage 3e: Add joint global condenser without cross-attention
 ------------------------------------------------------------
 Use the Stage 2 command and change/add:
   --text-stage global_joint_condenser \
-  --condenser-alpha 0.5 \
+  --condenser-alpha 1.0 \
   --condenser-epsilon 0.05 \
+  --condenser-mu 0.5 \
   --condenser-loss-weight 1e-4
 
 This stage builds a joint text segment set [endo_t, exo_1, ..., exo_m],
@@ -138,8 +141,9 @@ Stage 3f: Add joint-only global condenser without cross-attention
 -----------------------------------------------------------------
 Use the Stage 2 command and change/add:
   --text-stage global_joint_condenser_only \
-  --condenser-alpha 0.5 \
+  --condenser-alpha 1.0 \
   --condenser-epsilon 0.05 \
+  --condenser-mu 0.5 \
   --condenser-loss-weight 1e-4
 
 This stage builds [endo_t, exo_1, ..., exo_m] and uses only

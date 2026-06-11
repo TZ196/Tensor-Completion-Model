@@ -146,7 +146,7 @@ A_t 动态拓扑邻接矩阵
 
 - `text_data/exo_text_segments.json`
 
-当前 `build_texts_deepseek.py` 只负责外生文本生成。旧的 DeepSeek 内生文本生成逻辑已经清理，避免和确定性内生模板混淆。
+当前 `build_texts_deepseek.py` 只负责外生文本生成。
 
 ### 4.3 文本编码
 
@@ -315,7 +315,60 @@ concat(endo_t, mean(exo_segments))
 
 保留该名字主要用于历史实验兼容。
 
-### 7.3 `global_context_condenser`
+### 7.3 当前 Content Condenser 的实现
+
+当前 content condenser 已从早期的 softmax segment attention 改为 Soft IB Condenser，更接近 MindTS 中 Information Bottleneck 风格的内容压缩器。
+
+设当前待压缩文本片段为：
+
+```text
+segments = [s_1, s_2, ..., s_N]
+```
+
+模型先对每个 segment 独立估计保留概率：
+
+```text
+psi_i = sigmoid(MLP([context, s_i]))
+```
+
+其中 `psi_i` 表示第 `i` 个文本片段被保留的概率。与 softmax 不同，sigmoid 不要求所有 segment 互相竞争，也不强制权重和为 1。
+
+聚合时使用归一化 masked pooling：
+
+```text
+z_con = sum(psi_i * s_i) / max(sum(psi_i), epsilon)
+```
+
+同时引入 Bernoulli 先验：
+
+```text
+G(Z_con) ~ Bernoulli(mu)
+```
+
+其中 `mu` 是期望保留率：
+
+- `mu=0.2`：强压缩。
+- `mu=0.5`：中等压缩。
+- `mu=0.8`：弱压缩，更接近全保留。
+
+KL 约束为：
+
+```text
+KL(Bernoulli(psi_i) || Bernoulli(mu))
+= psi_i * log(psi_i / mu)
+  + (1 - psi_i) * log((1 - psi_i) / (1 - mu))
+```
+
+代码中：
+
+- `--condenser-mu` 控制 `mu`。
+- `--condenser-loss-weight` 控制 KL loss 权重。
+- `--condenser-epsilon` 用于 clamp `psi_i`，避免 `log(0)`，也用于归一化稳定。
+- `--condenser-alpha` 控制原始均值表示与压缩表示的残差混合比例。严格 Soft IB 版本建议使用 `1.0`，表示直接使用压缩后的 `z_con`；若训练不稳定，可降到 `0.5` 引入残差平滑。
+
+当前暂未实现跨模态重构损失 `L_rec`。主任务预测损失和可选 contrastive loss 会间接约束压缩文本是否有用。若后续发现文本分支被压掉，可以再加入轻量重构约束。
+
+### 7.4 `global_context_condenser`
 
 ```text
 exo_segments -> condenser -> condensed_exo_t
@@ -324,7 +377,7 @@ z_text = concat(endo_t, condensed_exo_t)
 
 只压缩外生文本片段，不压缩内生文本。该阶段不调用 cross-attention。
 
-### 7.4 `global_joint_condenser`
+### 7.5 `global_joint_condenser`
 
 ```text
 segments_t = [endo_t, exo_1, ..., exo_m]
@@ -334,7 +387,7 @@ z_text = concat(endo_t, condensed_joint_t)
 
 压缩内生与外生文本合体，同时保留 `endo_t` 直连，属于 residual joint condenser。该阶段不调用 cross-attention。
 
-### 7.5 `global_joint_condenser_only`
+### 7.6 `global_joint_condenser_only`
 
 ```text
 segments_t = [endo_t, exo_1, ..., exo_m]
@@ -343,7 +396,7 @@ z_text = condenser(segments_t)
 
 只使用压缩后的 joint 文本，不再额外拼接 `endo_t`。这是最纯粹的 joint content condenser。该阶段不调用 cross-attention。
 
-### 7.6 `cross_attention`
+### 7.7 `cross_attention`
 
 ```text
 Query = endo_t
@@ -354,11 +407,11 @@ Key/Value = exo_segments
 
 由于当前外生文本是全局实验配置，而不是动态事件库，因此它不一定适合作为主线。
 
-### 7.7 `semantic_gating`
+### 7.8 `semantic_gating`
 
 在 cross-attention 后增加语义门控。
 
-### 7.8 `segment_condenser`
+### 7.9 `segment_condenser`
 
 历史 MindTS 风格组合阶段：
 
@@ -462,8 +515,9 @@ python run_gcn_text_sat_tensor_experiment.py \
   --text-stage global_joint_condenser_only \
   --text-ablation real \
   --text-projection-dim 128 \
-  --condenser-alpha 0.5 \
+  --condenser-alpha 1.0 \
   --condenser-epsilon 0.05 \
+  --condenser-mu 0.5 \
   --condenser-loss-weight 1e-4 \
   --flow-text-loss-weight 0.01 \
   --graph-text-loss-weight 0.0 \
