@@ -99,7 +99,9 @@ def format_lr(lr):
     return ("%g" % lr).replace(".", "p").replace("-", "m")
 
 
-def stage_flags(text_stage, flow_text_weight, graph_text_weight):
+def stage_flags(text_stage, flow_text_weight, graph_text_weight,
+                flow_text_reconstruction_weight=0.0,
+                graph_text_reconstruction_weight=0.0):
     is_global_context = text_stage in [
         "concat",
         "global_context_concat",
@@ -128,5 +130,9 @@ def stage_flags(text_stage, flow_text_weight, graph_text_weight):
         ),
         "contrastive_enabled": (
             flow_text_weight > 0.0 or graph_text_weight > 0.0
+        ),
+        "reconstruction_enabled": (
+            flow_text_reconstruction_weight > 0.0 or
+            graph_text_reconstruction_weight > 0.0
         ),
     }

@@ -99,6 +99,11 @@ def parse_args():
     parser.add_argument("--alignment-temperature", type=float, default=0.2)
     parser.add_argument("--temporal-delta", type=int, default=2)
     parser.add_argument("--flow-text-loss-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--flow-text-reconstruction-weight",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument("--condenser-alpha", type=float, default=1.0)
     parser.add_argument("--condenser-epsilon", type=float, default=0.05)
     parser.add_argument("--condenser-loss-weight", type=float, default=0.0)
@@ -218,6 +223,9 @@ def main():
         alignment_temperature=args.alignment_temperature,
         temporal_delta=args.temporal_delta,
         flow_text_loss_weight=args.flow_text_loss_weight,
+        flow_text_reconstruction_weight=(
+            args.flow_text_reconstruction_weight
+        ),
         condenser_alpha=args.condenser_alpha,
         condenser_epsilon=args.condenser_epsilon,
         condenser_loss_weight=args.condenser_loss_weight,
@@ -241,7 +249,13 @@ def main():
         ],
     )
 
-    flags = stage_flags(args.text_stage, args.flow_text_loss_weight, 0.0)
+    flags = stage_flags(
+        args.text_stage,
+        args.flow_text_loss_weight,
+        0.0,
+        args.flow_text_reconstruction_weight,
+        0.0,
+    )
     is_global_context = args.text_stage in [
         "concat",
         "global_context_concat",
@@ -300,6 +314,10 @@ def main():
             "alignment_temperature": args.alignment_temperature,
             "temporal_delta": args.temporal_delta,
             "flow_text_loss_weight": args.flow_text_loss_weight,
+            "flow_text_reconstruction_weight": (
+                args.flow_text_reconstruction_weight
+            ),
+            "graph_text_reconstruction_weight": 0.0,
             "condenser_alpha": args.condenser_alpha,
             "condenser_epsilon": args.condenser_epsilon,
             "condenser_loss_weight": args.condenser_loss_weight,

@@ -366,7 +366,30 @@ KL(Bernoulli(psi_i) || Bernoulli(mu))
 - `--condenser-epsilon` 用于 clamp `psi_i`，避免 `log(0)`，也用于归一化稳定。
 - `--condenser-alpha` 控制原始均值表示与压缩表示的残差混合比例。严格 Soft IB 版本建议使用 `1.0`，表示直接使用压缩后的 `z_con`；若训练不稳定，可降到 `0.5` 引入残差平滑。
 
-当前暂未实现跨模态重构损失 `L_rec`。主任务预测损失和可选 contrastive loss 会间接约束压缩文本是否有用。若后续发现文本分支被压掉，可以再加入轻量重构约束。
+当前已支持跨模态重构损失 `L_rec`。它用于防止 Soft IB condenser 在压缩时把文本信息压掉。
+
+实现方式为：
+
+```text
+text_time -> MLP -> reconstructed_flow_time
+target = stop_gradient(flow_time)
+L_rec_flow = MSE(reconstructed_flow_time, target)
+```
+
+GCN+Text 模型还可选择重构 graph 表示：
+
+```text
+text_time -> MLP -> reconstructed_graph_time
+target = stop_gradient(graph_time)
+L_rec_graph = MSE(reconstructed_graph_time, target)
+```
+
+这里 `stop_gradient` 表示重构损失只训练文本侧重构器和文本表示，不反向拉动 flow/graph 主干。命令行参数为：
+
+- `--flow-text-reconstruction-weight`
+- `--graph-text-reconstruction-weight`
+
+建议先从较小权重开始，例如 `1e-4` 或 `1e-3`。如果权重过大，重构任务可能压过主预测任务。
 
 ### 7.4 `global_context_condenser`
 

@@ -236,16 +236,42 @@ class TemporalSemanticAlignmentLayer(k.layers.Layer):
 
     def __init__(self, projection_dim=128, temperature=0.2,
                  temporal_delta=2, flow_text_weight=0.0,
-                 graph_text_weight=0.0, **kwargs):
+                 graph_text_weight=0.0,
+                 flow_text_reconstruction_weight=0.0,
+                 graph_text_reconstruction_weight=0.0,
+                 **kwargs):
         super().__init__(**kwargs)
         self.projection_dim = int(projection_dim)
         self.temperature = float(temperature)
         self.temporal_delta = int(temporal_delta)
         self.flow_text_weight = float(flow_text_weight)
         self.graph_text_weight = float(graph_text_weight)
+        self.flow_text_reconstruction_weight = float(
+            flow_text_reconstruction_weight
+        )
+        self.graph_text_reconstruction_weight = float(
+            graph_text_reconstruction_weight
+        )
         self.flow_proj = k.layers.Dense(projection_dim, name="align_flow")
         self.graph_proj = k.layers.Dense(projection_dim, name="align_graph")
         self.text_proj = k.layers.Dense(projection_dim, name="align_text")
+        self.flow_reconstruct = None
+        self.graph_reconstruct = None
+
+    def build(self, input_shape):
+        if self.flow_text_reconstruction_weight > 0.0:
+            flow_dim = int(input_shape[0][-1])
+            self.flow_reconstruct = k.layers.Dense(
+                flow_dim,
+                name="reconstruct_flow_from_text",
+            )
+        if len(input_shape) == 4 and self.graph_text_reconstruction_weight > 0.0:
+            graph_dim = int(input_shape[1][-1])
+            self.graph_reconstruct = k.layers.Dense(
+                graph_dim,
+                name="reconstruct_graph_from_text",
+            )
+        super().build(input_shape)
 
     def _masked_infonce(self, left, right, times):
         left = tf.math.l2_normalize(left, axis=-1)
@@ -288,6 +314,15 @@ class TemporalSemanticAlignmentLayer(k.layers.Layer):
                 self.flow_text_weight *
                 self._masked_infonce(flow_z, text_z, unique_time)
             )
+        if self.flow_text_reconstruction_weight > 0.0:
+            flow_reconstructed = self.flow_reconstruct(text_time)
+            flow_target = tf.stop_gradient(flow_time)
+            flow_rec_loss = tf.reduce_mean(
+                tf.square(flow_reconstructed - flow_target)
+            )
+            self.add_loss(
+                self.flow_text_reconstruction_weight * flow_rec_loss
+            )
         if graph_x is not None and self.graph_text_weight > 0.0:
             graph_time = tf.math.unsorted_segment_mean(
                 graph_x, segment_ids, num_time
@@ -296,6 +331,18 @@ class TemporalSemanticAlignmentLayer(k.layers.Layer):
             self.add_loss(
                 self.graph_text_weight *
                 self._masked_infonce(graph_z, text_z, unique_time)
+            )
+        if graph_x is not None and self.graph_text_reconstruction_weight > 0.0:
+            graph_time = tf.math.unsorted_segment_mean(
+                graph_x, segment_ids, num_time
+            )
+            graph_reconstructed = self.graph_reconstruct(text_time)
+            graph_target = tf.stop_gradient(graph_time)
+            graph_rec_loss = tf.reduce_mean(
+                tf.square(graph_reconstructed - graph_target)
+            )
+            self.add_loss(
+                self.graph_text_reconstruction_weight * graph_rec_loss
             )
         return text_x
 
@@ -307,6 +354,12 @@ class TemporalSemanticAlignmentLayer(k.layers.Layer):
             "temporal_delta": self.temporal_delta,
             "flow_text_weight": self.flow_text_weight,
             "graph_text_weight": self.graph_text_weight,
+            "flow_text_reconstruction_weight": (
+                self.flow_text_reconstruction_weight
+            ),
+            "graph_text_reconstruction_weight": (
+                self.graph_text_reconstruction_weight
+            ),
         })
         return config
 

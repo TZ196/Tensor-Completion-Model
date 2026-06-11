@@ -159,6 +159,18 @@ Use Stage 3a/3b/3c/3d/3e/3f and add:
   --alignment-temperature 0.2 \
   --temporal-delta 2
 
+Stage 3h: Add cross-modal reconstruction
+----------------------------------------
+Use Stage 3d/3e/3f and add:
+  --flow-text-reconstruction-weight 1e-4
+
+For GCN-CoSTCo+Text, graph reconstruction can also be enabled:
+  --graph-text-reconstruction-weight 1e-4
+
+The reconstruction loss uses text_time to reconstruct stop-gradient flow_time
+or graph_time representations. Start from a small weight such as 1e-4 or
+1e-3, because a large reconstruction loss can dominate the prediction task.
+
 Text ablations
 --------------
 Real text:

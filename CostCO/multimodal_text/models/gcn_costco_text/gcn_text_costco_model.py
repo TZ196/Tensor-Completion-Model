@@ -38,6 +38,8 @@ def create_mindtext_gcn_costco(shape, topology, endo_embeddings,
                                temporal_delta=2,
                                flow_text_loss_weight=0.0,
                                graph_text_loss_weight=0.0,
+                               flow_text_reconstruction_weight=0.0,
+                               graph_text_reconstruction_weight=0.0,
                                condenser_alpha=1.0,
                                condenser_epsilon=0.05,
                                condenser_loss_weight=0.0,
@@ -112,13 +114,24 @@ def create_mindtext_gcn_costco(shape, topology, endo_embeddings,
         text_projection_dim,
         name_prefix="text",
     )
-    if flow_text_loss_weight > 0.0 or graph_text_loss_weight > 0.0:
+    if (
+        flow_text_loss_weight > 0.0 or
+        graph_text_loss_weight > 0.0 or
+        flow_text_reconstruction_weight > 0.0 or
+        graph_text_reconstruction_weight > 0.0
+    ):
         text_x = TemporalSemanticAlignmentLayer(
             projection_dim=alignment_projection_dim,
             temperature=alignment_temperature,
             temporal_delta=temporal_delta,
             flow_text_weight=flow_text_loss_weight,
             graph_text_weight=graph_text_loss_weight,
+            flow_text_reconstruction_weight=(
+                flow_text_reconstruction_weight
+            ),
+            graph_text_reconstruction_weight=(
+                graph_text_reconstruction_weight
+            ),
             name="temporal_semantic_alignment",
         )([flow_x, graph_x, text_x, inputs[2]])
 
