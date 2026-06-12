@@ -320,6 +320,288 @@ class ModeWiseStructuralLayer(k.layers.Layer):
         return config
 
 
+class ModeWiseTextLayer(k.layers.Layer):
+    """Inject source/destination/time text embeddings into CoSTCo modes."""
+
+    def __init__(self, source_text_embeddings, destination_text_embeddings,
+                 time_text_embeddings, rank=50, hidden_dim=64, align_dim=64,
+                 alpha_init=0.1, source_text_align_weight=0.0,
+                 destination_text_align_weight=0.0,
+                 time_text_align_weight=0.0, alignment_temperature=0.2,
+                 temporal_delta=2, target_start=0, **kwargs):
+        super().__init__(**kwargs)
+        source = np.asarray(source_text_embeddings, dtype="float32")
+        destination = np.asarray(destination_text_embeddings, dtype="float32")
+        time = np.asarray(time_text_embeddings, dtype="float32")
+        if source.ndim != 3:
+            raise ValueError("source_text_embeddings must have shape [time,node,dim]")
+        if destination.ndim != 3:
+            raise ValueError(
+                "destination_text_embeddings must have shape [time,node,dim]"
+            )
+        if time.ndim != 2:
+            raise ValueError("time_text_embeddings must have shape [time,dim]")
+        if source.shape != destination.shape:
+            raise ValueError("source/destination text embeddings must share shape")
+        if source.shape[0] != time.shape[0] or source.shape[2] != time.shape[1]:
+            raise ValueError("source/destination/time text embedding shapes disagree")
+
+        self.rank = int(rank)
+        self.hidden_dim = int(hidden_dim)
+        self.align_dim = int(align_dim)
+        self.alpha_init = float(alpha_init)
+        self.source_text_align_weight = float(source_text_align_weight)
+        self.destination_text_align_weight = float(destination_text_align_weight)
+        self.time_text_align_weight = float(time_text_align_weight)
+        self.alignment_temperature = float(alignment_temperature)
+        self.temporal_delta = int(temporal_delta)
+        self.target_start = int(target_start)
+        self.text_time_len = int(source.shape[0])
+        self.node_count = int(source.shape[1])
+        self.text_dim = int(source.shape[2])
+        self.source_text_embeddings = tf.constant(source, dtype=tf.float32)
+        self.destination_text_embeddings = tf.constant(destination, dtype=tf.float32)
+        self.time_text_embeddings = tf.constant(time, dtype=tf.float32)
+
+        self.source_proj_1 = k.layers.Dense(hidden_dim)
+        self.source_proj_norm_1 = k.layers.LayerNormalization()
+        self.source_proj_act = k.layers.Activation("gelu")
+        self.source_proj_2 = k.layers.Dense(rank)
+        self.source_proj_norm_2 = k.layers.LayerNormalization()
+        self.destination_proj_1 = k.layers.Dense(hidden_dim)
+        self.destination_proj_norm_1 = k.layers.LayerNormalization()
+        self.destination_proj_act = k.layers.Activation("gelu")
+        self.destination_proj_2 = k.layers.Dense(rank)
+        self.destination_proj_norm_2 = k.layers.LayerNormalization()
+        self.time_proj_1 = k.layers.Dense(hidden_dim)
+        self.time_proj_norm_1 = k.layers.LayerNormalization()
+        self.time_proj_act = k.layers.Activation("gelu")
+        self.time_proj_2 = k.layers.Dense(rank)
+        self.time_proj_norm_2 = k.layers.LayerNormalization()
+
+        self.source_gate = k.layers.Dense(rank, activation="sigmoid")
+        self.destination_gate = k.layers.Dense(rank, activation="sigmoid")
+        self.time_gate = k.layers.Dense(rank, activation="sigmoid")
+        self.source_norm = k.layers.LayerNormalization()
+        self.destination_norm = k.layers.LayerNormalization()
+        self.time_norm = k.layers.LayerNormalization()
+
+        self.source_mode_proj = k.layers.Dense(align_dim)
+        self.source_text_proj = k.layers.Dense(align_dim)
+        self.destination_mode_proj = k.layers.Dense(align_dim)
+        self.destination_text_proj = k.layers.Dense(align_dim)
+        self.time_mode_proj = k.layers.Dense(align_dim)
+        self.time_text_proj = k.layers.Dense(align_dim)
+
+    def build(self, input_shape):
+        def init_alpha(value):
+            value = np.clip(value / 0.2, 1e-4, 1.0 - 1e-4)
+            return float(np.log(value / (1.0 - value)))
+
+        initializer = k.initializers.Constant(init_alpha(self.alpha_init))
+        self.source_alpha_logit = self.add_weight(
+            name="source_text_alpha_logit",
+            shape=(),
+            initializer=initializer,
+            trainable=True,
+        )
+        self.destination_alpha_logit = self.add_weight(
+            name="destination_text_alpha_logit",
+            shape=(),
+            initializer=initializer,
+            trainable=True,
+        )
+        self.time_alpha_logit = self.add_weight(
+            name="time_text_alpha_logit",
+            shape=(),
+            initializer=initializer,
+            trainable=True,
+        )
+        super().build(input_shape)
+
+    def _project_source(self, x):
+        x = self.source_proj_1(x)
+        x = self.source_proj_norm_1(x)
+        x = self.source_proj_act(x)
+        x = self.source_proj_2(x)
+        return self.source_proj_norm_2(x)
+
+    def _project_destination(self, x):
+        x = self.destination_proj_1(x)
+        x = self.destination_proj_norm_1(x)
+        x = self.destination_proj_act(x)
+        x = self.destination_proj_2(x)
+        return self.destination_proj_norm_2(x)
+
+    def _project_time(self, x):
+        x = self.time_proj_1(x)
+        x = self.time_proj_norm_1(x)
+        x = self.time_proj_act(x)
+        x = self.time_proj_2(x)
+        return self.time_proj_norm_2(x)
+
+    def _masked_infonce(self, left, right, mask=None):
+        left = tf.math.l2_normalize(left, axis=-1)
+        right = tf.math.l2_normalize(right, axis=-1)
+        logits = tf.matmul(left, right, transpose_b=True)
+        logits = logits / self.alignment_temperature
+        if mask is not None:
+            logits = tf.where(mask, tf.ones_like(logits) * -1e9, logits)
+        labels = tf.range(tf.shape(logits)[0], dtype=tf.int32)
+        loss_a = tf.keras.losses.sparse_categorical_crossentropy(
+            labels, logits, from_logits=True
+        )
+        loss_b = tf.keras.losses.sparse_categorical_crossentropy(
+            labels, tf.transpose(logits), from_logits=True
+        )
+        return 0.5 * (tf.reduce_mean(loss_a) + tf.reduce_mean(loss_b))
+
+    def _aggregate_by_key(self, left, right, keys):
+        unique_keys, segment_ids = tf.unique(keys)
+        count = tf.shape(unique_keys)[0]
+        left = tf.math.unsorted_segment_mean(left, segment_ids, count)
+        right = tf.math.unsorted_segment_mean(right, segment_ids, count)
+        return left, right, unique_keys
+
+    def _add_entity_alignment(self, mode_x, text_x, keys, weight,
+                              mode_proj, text_proj, metric_prefix):
+        if weight <= 0.0:
+            return
+        mode_x, text_x, unique_keys = self._aggregate_by_key(mode_x, text_x, keys)
+        entity_ids = unique_keys // self.text_time_len
+        entity_times = unique_keys % self.text_time_len
+        same_entity = entity_ids[:, None] == entity_ids[None, :]
+        time_dist = tf.abs(entity_times[:, None] - entity_times[None, :])
+        near_time = time_dist <= self.temporal_delta
+        diagonal = tf.eye(tf.shape(unique_keys)[0], dtype=tf.bool)
+        mask = tf.logical_and(
+            tf.logical_and(same_entity, near_time),
+            tf.logical_not(diagonal),
+        )
+        loss = self._masked_infonce(mode_proj(mode_x), text_proj(text_x), mask=mask)
+        self.add_loss(weight * loss)
+        self.add_metric(
+            loss,
+            name="%s_text_align_loss" % metric_prefix,
+            aggregation="mean",
+        )
+        self.add_metric(
+            weight * loss,
+            name="%s_text_align_weighted_loss" % metric_prefix,
+            aggregation="mean",
+        )
+
+    def _add_time_alignment(self, mode_x, text_x, times):
+        if self.time_text_align_weight <= 0.0:
+            return
+        mode_x, text_x, unique_times = self._aggregate_by_key(mode_x, text_x, times)
+        dist = tf.abs(unique_times[:, None] - unique_times[None, :])
+        diagonal = tf.eye(tf.shape(unique_times)[0], dtype=tf.bool)
+        near = tf.logical_and(dist <= self.temporal_delta, tf.logical_not(diagonal))
+        loss = self._masked_infonce(
+            self.time_mode_proj(mode_x),
+            self.time_text_proj(text_x),
+            mask=near,
+        )
+        self.add_loss(self.time_text_align_weight * loss)
+        self.add_metric(loss, name="time_text_align_loss", aggregation="mean")
+        self.add_metric(
+            self.time_text_align_weight * loss,
+            name="time_text_align_weighted_loss",
+            aggregation="mean",
+        )
+
+    def call(self, inputs):
+        source_mode, destination_mode, time_mode, src_input, dst_input, time_input = inputs
+        source_mode = tf.squeeze(source_mode, axis=1)
+        destination_mode = tf.squeeze(destination_mode, axis=1)
+        time_mode = tf.squeeze(time_mode, axis=1)
+        src = tf.cast(tf.reshape(src_input, [-1]), tf.int32)
+        dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
+        time = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
+        text_time = time - self.target_start
+
+        source_text_t = tf.gather(self.source_text_embeddings, text_time)
+        source_text_raw = tf.gather_nd(
+            source_text_t,
+            tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), src], axis=1),
+        )
+        destination_text_t = tf.gather(self.destination_text_embeddings, text_time)
+        destination_text_raw = tf.gather_nd(
+            destination_text_t,
+            tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), dst], axis=1),
+        )
+        time_text_raw = tf.gather(self.time_text_embeddings, text_time)
+
+        source_text = self._project_source(source_text_raw)
+        destination_text = self._project_destination(destination_text_raw)
+        time_text = self._project_time(time_text_raw)
+        source_alpha = 0.2 * tf.sigmoid(self.source_alpha_logit)
+        destination_alpha = 0.2 * tf.sigmoid(self.destination_alpha_logit)
+        time_alpha = 0.2 * tf.sigmoid(self.time_alpha_logit)
+        source_gate = self.source_gate(
+            tf.concat([source_mode, source_text], axis=-1)
+        )
+        destination_gate = self.destination_gate(
+            tf.concat([destination_mode, destination_text], axis=-1)
+        )
+        time_gate = self.time_gate(tf.concat([time_mode, time_text], axis=-1))
+        source_out = self.source_norm(
+            source_mode + source_alpha * source_gate * source_text
+        )
+        destination_out = self.destination_norm(
+            destination_mode + destination_alpha * destination_gate * destination_text
+        )
+        time_out = self.time_norm(time_mode + time_alpha * time_gate * time_text)
+
+        source_keys = src * self.text_time_len + text_time
+        destination_keys = dst * self.text_time_len + text_time
+        self._add_entity_alignment(
+            source_mode,
+            source_text,
+            source_keys,
+            self.source_text_align_weight,
+            self.source_mode_proj,
+            self.source_text_proj,
+            "source",
+        )
+        self._add_entity_alignment(
+            destination_mode,
+            destination_text,
+            destination_keys,
+            self.destination_text_align_weight,
+            self.destination_mode_proj,
+            self.destination_text_proj,
+            "destination",
+        )
+        self._add_time_alignment(time_mode, time_text, text_time)
+
+        return [
+            source_out[:, None, :],
+            destination_out[:, None, :],
+            time_out[:, None, :],
+        ]
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "rank": self.rank,
+            "hidden_dim": self.hidden_dim,
+            "align_dim": self.align_dim,
+            "alpha_init": self.alpha_init,
+            "source_text_align_weight": self.source_text_align_weight,
+            "destination_text_align_weight": self.destination_text_align_weight,
+            "time_text_align_weight": self.time_text_align_weight,
+            "alignment_temperature": self.alignment_temperature,
+            "temporal_delta": self.temporal_delta,
+            "target_start": self.target_start,
+            "text_time_len": self.text_time_len,
+            "node_count": self.node_count,
+            "text_dim": self.text_dim,
+        })
+        return config
+
+
 class TemporalGCNPairLayer(k.layers.Layer):
     """Encode source/destination nodes with A_t selected by time index."""
 
@@ -421,7 +703,16 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       structural_alpha=0.1, source_align_weight=0.0,
                       destination_align_weight=0.0, time_align_weight=0.0,
                       alignment_temperature=0.2, temporal_delta=2,
-                      time_conditioned_modes=False, output_bias_init=0.0):
+                      time_conditioned_modes=False,
+                      source_text_embeddings=None,
+                      destination_text_embeddings=None,
+                      time_text_embeddings=None,
+                      text_hidden_dim=64, text_align_dim=64,
+                      text_alpha=0.1, source_text_align_weight=0.0,
+                      destination_text_align_weight=0.0,
+                      time_text_align_weight=0.0,
+                      text_target_start=0,
+                      output_bias_init=0.0):
     """Create CoSTCo with a trainable temporal GCN topology branch.
 
     Inputs are still source, destination, and time indices. The GCN branch uses
@@ -465,6 +756,43 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
             alignment_temperature=alignment_temperature,
             temporal_delta=temporal_delta,
             name="mode_wise_structural_alignment",
+        )([
+            embeds[0],
+            embeds[1],
+            embeds[2],
+            inputs[0],
+            inputs[1],
+            inputs[2],
+        ])
+    text_enabled = (
+        source_text_embeddings is not None or
+        destination_text_embeddings is not None or
+        time_text_embeddings is not None
+    )
+    if text_enabled:
+        if (
+            source_text_embeddings is None or
+            destination_text_embeddings is None or
+            time_text_embeddings is None
+        ):
+            raise ValueError(
+                "source, destination, and time text embeddings must be provided together"
+            )
+        embeds = ModeWiseTextLayer(
+            source_text_embeddings=source_text_embeddings,
+            destination_text_embeddings=destination_text_embeddings,
+            time_text_embeddings=time_text_embeddings,
+            rank=rank,
+            hidden_dim=text_hidden_dim,
+            align_dim=text_align_dim,
+            alpha_init=text_alpha,
+            source_text_align_weight=source_text_align_weight,
+            destination_text_align_weight=destination_text_align_weight,
+            time_text_align_weight=time_text_align_weight,
+            alignment_temperature=alignment_temperature,
+            temporal_delta=temporal_delta,
+            target_start=text_target_start,
+            name="mode_wise_text_alignment",
         )([
             embeds[0],
             embeds[1],

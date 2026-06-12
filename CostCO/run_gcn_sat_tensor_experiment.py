@@ -101,6 +101,30 @@ def load_mode_struct_features(path, group, seed, shuffle_features=False):
     return node_features, time_features, node_names, time_names, quality
 
 
+def load_mode_text_embeddings(text_dir):
+    source_path = os.path.join(text_dir, "source_text_embeddings.npy")
+    destination_path = os.path.join(text_dir, "destination_text_embeddings.npy")
+    time_path = os.path.join(text_dir, "time_text_embeddings.npy")
+    metadata_path = os.path.join(text_dir, "text_embedding_metadata.json")
+    source = np.load(source_path).astype("float32")
+    destination = np.load(destination_path).astype("float32")
+    time = np.load(time_path).astype("float32")
+    if source.ndim != 3:
+        raise ValueError("source text embeddings must have shape [time,node,dim]")
+    if destination.shape != source.shape:
+        raise ValueError("source/destination text embeddings must share shape")
+    if time.ndim != 2 or time.shape[0] != source.shape[0]:
+        raise ValueError("time text embeddings must have shape [time,dim]")
+    if time.shape[1] != source.shape[2]:
+        raise ValueError("source/destination/time text embedding dims differ")
+    metadata = {}
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+    target_start = int(metadata.get("target_start", 0))
+    return source, destination, time, metadata, target_start
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run GCN-CoSTCo tensor completion with adjacency fusion."
@@ -142,6 +166,14 @@ def parse_args():
     parser.add_argument("--time-align-weight", type=float, default=0.0)
     parser.add_argument("--alignment-temperature", type=float, default=0.2)
     parser.add_argument("--temporal-delta", type=int, default=2)
+    parser.add_argument("--use-mode-text", action="store_true")
+    parser.add_argument("--mode-text-dir", default="mode_text_data")
+    parser.add_argument("--text-hidden-dim", type=int, default=64)
+    parser.add_argument("--text-align-dim", type=int, default=64)
+    parser.add_argument("--text-alpha", type=float, default=0.1)
+    parser.add_argument("--source-text-align-weight", type=float, default=0.0)
+    parser.add_argument("--destination-text-align-weight", type=float, default=0.0)
+    parser.add_argument("--time-text-align-weight", type=float, default=0.0)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -260,6 +292,26 @@ def main():
     else:
         print("Mode structural features: disabled")
 
+    source_text_embeddings = None
+    destination_text_embeddings = None
+    time_text_embeddings = None
+    text_metadata = {}
+    text_target_start = 0
+    if args.use_mode_text:
+        (
+            source_text_embeddings,
+            destination_text_embeddings,
+            time_text_embeddings,
+            text_metadata,
+            text_target_start,
+        ) = load_mode_text_embeddings(args.mode_text_dir)
+        print("Mode text source embeddings:", source_text_embeddings.shape)
+        print("Mode text destination embeddings:", destination_text_embeddings.shape)
+        print("Mode text time embeddings:", time_text_embeddings.shape)
+        print("Mode text target start:", text_target_start)
+    else:
+        print("Mode text embeddings: disabled")
+
     target_scale = get_target_scale(train_values, args.target_normalization)
     train_targets = train_values / target_scale
     val_targets = val_values / target_scale
@@ -288,6 +340,16 @@ def main():
         alignment_temperature=args.alignment_temperature,
         temporal_delta=args.temporal_delta,
         time_conditioned_modes=args.time_conditioned_modes,
+        source_text_embeddings=source_text_embeddings,
+        destination_text_embeddings=destination_text_embeddings,
+        time_text_embeddings=time_text_embeddings,
+        text_hidden_dim=args.text_hidden_dim,
+        text_align_dim=args.text_align_dim,
+        text_alpha=args.text_alpha,
+        source_text_align_weight=args.source_text_align_weight,
+        destination_text_align_weight=args.destination_text_align_weight,
+        time_text_align_weight=args.time_text_align_weight,
+        text_target_start=text_target_start,
         output_bias_init=output_bias_init,
     )
     compile_gcn_costco(model, lr=args.lr)
@@ -349,6 +411,15 @@ def main():
             "time_align_weight": args.time_align_weight,
             "alignment_temperature": args.alignment_temperature,
             "temporal_delta": args.temporal_delta,
+            "use_mode_text": args.use_mode_text,
+            "mode_text_dir": args.mode_text_dir,
+            "text_embedding_metadata": text_metadata,
+            "text_hidden_dim": args.text_hidden_dim,
+            "text_align_dim": args.text_align_dim,
+            "text_alpha": args.text_alpha,
+            "source_text_align_weight": args.source_text_align_weight,
+            "destination_text_align_weight": args.destination_text_align_weight,
+            "time_text_align_weight": args.time_text_align_weight,
             "rank": args.rank,
             "nc": args.nc,
             "node_dim": args.node_dim,
