@@ -21,6 +21,7 @@ EPOCHS="${EPOCHS:-200}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 TEXT_BATCH_SIZE="${TEXT_BATCH_SIZE:-32}"
 ALLOW_REMOTE_MODEL="${ALLOW_REMOTE_MODEL:-0}"
+REBUILD_TEXT="${REBUILD_TEXT:-1}"
 
 mkdir -p logs results "$TEXT_DIR"
 
@@ -61,7 +62,8 @@ run_step() {
 ensure_text_embeddings() {
   if [[ -f "$TEXT_DIR/source_text_embeddings.npy" \
         && -f "$TEXT_DIR/destination_text_embeddings.npy" \
-        && -f "$TEXT_DIR/time_text_embeddings.npy" ]]; then
+        && -f "$TEXT_DIR/time_text_embeddings.npy" \
+        && "$REBUILD_TEXT" != "1" ]]; then
     echo "Text embeddings already exist in $TEXT_DIR"
     return
   fi
@@ -114,12 +116,14 @@ run_step "text_ablation_T0_gcn_baseline_seed${SEED}" \
 
 run_step "text_ablation_T1_text_no_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
+  --struct-feature-group none \
   "${text_args[@]}" \
   "${base_args[@]}" \
   --metrics-path "results/text_ablation_T1_text_no_align_seed${SEED}.json"
 
 run_step "text_ablation_T2_time_text_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
+  --struct-feature-group none \
   "${text_args[@]}" \
   --time-text-align-weight 0.001 \
   --alignment-temperature 0.2 \
@@ -129,6 +133,7 @@ run_step "text_ablation_T2_time_text_align_seed${SEED}" \
 
 run_step "text_ablation_T3_source_text_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
+  --struct-feature-group none \
   "${text_args[@]}" \
   --source-text-align-weight 0.0005 \
   --alignment-temperature 0.2 \
@@ -138,6 +143,7 @@ run_step "text_ablation_T3_source_text_align_seed${SEED}" \
 
 run_step "text_ablation_T4_destination_text_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
+  --struct-feature-group none \
   "${text_args[@]}" \
   --destination-text-align-weight 0.0005 \
   --alignment-temperature 0.2 \
@@ -147,6 +153,7 @@ run_step "text_ablation_T4_destination_text_align_seed${SEED}" \
 
 run_step "text_ablation_T5_all_text_align_small_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
+  --struct-feature-group none \
   "${text_args[@]}" \
   --source-text-align-weight 0.0005 \
   --destination-text-align-weight 0.0005 \
@@ -158,6 +165,7 @@ run_step "text_ablation_T5_all_text_align_small_seed${SEED}" \
 
 run_step "text_ablation_T6_all_text_align_strong_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
+  --struct-feature-group none \
   "${text_args[@]}" \
   --source-text-align-weight 0.001 \
   --destination-text-align-weight 0.001 \
@@ -166,17 +174,6 @@ run_step "text_ablation_T6_all_text_align_strong_seed${SEED}" \
   --temporal-delta 2 \
   "${base_args[@]}" \
   --metrics-path "results/text_ablation_T6_all_text_align_strong_seed${SEED}.json"
-
-run_step "text_ablation_T7_struct_A5_plus_time_text_seed${SEED}" \
-  "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  --struct-feature-group full \
-  --time-align-weight 0.001 \
-  "${text_args[@]}" \
-  --time-text-align-weight 0.001 \
-  --alignment-temperature 0.2 \
-  --temporal-delta 2 \
-  "${base_args[@]}" \
-  --metrics-path "results/text_ablation_T7_struct_A5_plus_time_text_seed${SEED}.json"
 
 echo "Ablation finished at $(date)"
 echo "Result files:"
