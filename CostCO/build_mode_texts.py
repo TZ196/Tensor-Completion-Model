@@ -85,6 +85,11 @@ def change_label(value):
     return "actively changing"
 
 
+def zscore(value, values):
+    values = np.asarray(values, dtype="float32")
+    return float((value - np.mean(values)) / max(np.std(values), EPS))
+
+
 def load_tensor(path):
     tensor = np.load(path).astype("float32")
     if tensor.ndim != 3:
@@ -113,6 +118,11 @@ def node_topology_roles(topology, planes):
     bottleneck_exposure = np.zeros((time_len, node_count), dtype="float32")
     neighbor_change = np.zeros((time_len, node_count), dtype="float32")
     time_path_mean = np.zeros(time_len, dtype="float32")
+    time_path_p90 = np.zeros(time_len, dtype="float32")
+    time_edge_density = np.zeros(time_len, dtype="float32")
+    time_average_degree = np.zeros(time_len, dtype="float32")
+    time_inter_plane_edge_ratio = np.zeros(time_len, dtype="float32")
+    time_reachable_od_ratio = np.zeros(time_len, dtype="float32")
     time_bottleneck_conc = np.zeros(time_len, dtype="float32")
     time_cross_plane_pressure = np.zeros(time_len, dtype="float32")
     time_change = np.zeros(time_len, dtype="float32")
@@ -129,6 +139,10 @@ def node_topology_roles(topology, planes):
         finite_dists = dist[finite_non_diag]
         if finite_dists.size > 0:
             time_path_mean[time_idx] = float(np.mean(finite_dists))
+            time_path_p90[time_idx] = float(np.percentile(finite_dists, 90))
+            time_reachable_od_ratio[time_idx] = (
+                finite_dists.size / max(node_count * (node_count - 1), 1)
+            )
 
         bc, edge_bc = brandes_node_edge_betweenness(adj)
         node_bc[time_idx] = bc
@@ -145,6 +159,19 @@ def node_topology_roles(topology, planes):
             top_edges = set()
 
         cur_edges = edge_set(adj)
+        edge_count = len(cur_edges)
+        degrees = adj.sum(axis=1).astype("float32")
+        inter_edges = sum(
+            int(plane_ids[src] != plane_ids[dst])
+            for src, dst in cur_edges
+        )
+        time_edge_density[time_idx] = (
+            2.0 * edge_count / max(node_count * (node_count - 1), 1)
+        )
+        time_average_degree[time_idx] = (
+            float(np.mean(degrees)) / max(node_count - 1, 1)
+        )
+        time_inter_plane_edge_ratio[time_idx] = inter_edges / max(edge_count, 1)
         time_change[time_idx] = edge_change_rate(cur_edges, prev_edges)
         inter_paths = 0
         finite_paths = 0
@@ -191,6 +218,11 @@ def node_topology_roles(topology, planes):
         "bottleneck_exposure": bottleneck_exposure,
         "neighbor_change": neighbor_change,
         "time_path_mean": time_path_mean,
+        "time_path_p90": time_path_p90,
+        "time_edge_density": time_edge_density,
+        "time_average_degree": time_average_degree,
+        "time_inter_plane_edge_ratio": time_inter_plane_edge_ratio,
+        "time_reachable_od_ratio": time_reachable_od_ratio,
         "time_bottleneck_concentration": time_bottleneck_conc,
         "time_cross_plane_pressure": time_cross_plane_pressure,
         "time_change": time_change,
@@ -262,7 +294,6 @@ def build_records(tensor, topology, history_len=30, target_start=0,
 
     outbound = history.sum(axis=1).T
     inbound = history.sum(axis=0).T
-    global_load = history.sum(axis=(0, 1))
     out_mean = outbound.mean(axis=0)
     in_mean = inbound.mean(axis=0)
     out_peak = np.percentile(outbound, 95, axis=0)
@@ -307,29 +338,21 @@ def build_records(tensor, topology, history_len=30, target_start=0,
         0.66,
     )
     path_q = np.quantile(topo_stats["time_path_mean"], [0.33, 0.66])
-    bottle_high = np.quantile(topo_stats["time_bottleneck_concentration"], 0.66)
-    cross_high = np.quantile(topo_stats["time_cross_plane_pressure"], 0.66)
-    global_peak = np.percentile(global_load, 95)
-    global_load_q = np.quantile(global_load, [0.33, 0.66])
-    active_od = np.mean(np.count_nonzero(history > 0, axis=(0, 1))) / (
-        source_count * (source_count - 1)
+    path_p90_q = np.quantile(topo_stats["time_path_p90"], [0.33, 0.66])
+    edge_density_q = np.quantile(topo_stats["time_edge_density"], [0.33, 0.66])
+    inter_edge_q = np.quantile(
+        topo_stats["time_inter_plane_edge_ratio"],
+        [0.33, 0.66],
     )
-
-    historical_load_level = level_by_quantiles(
-        float(np.mean(global_load)),
-        global_load_q[0],
-        global_load_q[1],
+    reachable_q = np.quantile(topo_stats["time_reachable_od_ratio"], [0.33, 0.66])
+    bottle_q = np.quantile(
+        topo_stats["time_bottleneck_concentration"],
+        [0.33, 0.66],
     )
-    historical_peak_level = level_by_quantiles(
-        global_peak,
-        global_load_q[0],
-        global_load_q[1],
-        labels=("low", "moderate", "high"),
+    cross_path_q = np.quantile(
+        topo_stats["time_cross_plane_pressure"],
+        [0.33, 0.66],
     )
-    global_trend = trend_label(global_load)
-    global_trend_value = trend_ratio(global_load)
-    active_od_level = activity_label(active_od)
-
     source_records = []
     destination_records = []
     time_records = []
@@ -337,47 +360,101 @@ def build_records(tensor, topology, history_len=30, target_start=0,
     for time_idx in target_times:
         time_state = {
             "time_index": time_idx,
-            "historical_load_level": historical_load_level,
-            "historical_mean_global_load": float(np.mean(global_load)),
-            "historical_peak_level": historical_peak_level,
-            "historical_peak_global_load": float(global_peak),
-            "global_trend": global_trend,
-            "global_trend_ratio": float(global_trend_value),
-            "active_od_level": active_od_level,
-            "active_od_ratio": float(active_od),
+            "edge_density_level": level_by_quantiles(
+                topo_stats["time_edge_density"][time_idx],
+                edge_density_q[0],
+                edge_density_q[1],
+                labels=("sparse", "moderate", "dense"),
+            ),
+            "edge_density": float(topo_stats["time_edge_density"][time_idx]),
+            "average_degree": float(topo_stats["time_average_degree"][time_idx]),
+            "inter_plane_edge_level": level_by_quantiles(
+                topo_stats["time_inter_plane_edge_ratio"][time_idx],
+                inter_edge_q[0],
+                inter_edge_q[1],
+                labels=("low", "moderate", "high"),
+            ),
+            "inter_plane_edge_ratio": float(
+                topo_stats["time_inter_plane_edge_ratio"][time_idx]
+            ),
+            "reachable_od_level": level_by_quantiles(
+                topo_stats["time_reachable_od_ratio"][time_idx],
+                reachable_q[0],
+                reachable_q[1],
+                labels=("limited", "moderate", "broad"),
+            ),
+            "reachable_od_ratio": float(topo_stats["time_reachable_od_ratio"][time_idx]),
             "topology_change_state": change_label(
                 topo_stats["time_change"][time_idx]
             ),
             "topology_change_rate": float(topo_stats["time_change"][time_idx]),
-            "path_bottleneck_state": path_bottleneck_state(
-                time_idx,
-                topo_stats,
+            "topology_change_zscore": zscore(
+                topo_stats["time_change"][time_idx],
+                topo_stats["time_change"],
+            ),
+            "path_length_level": level_by_quantiles(
+                topo_stats["time_path_mean"][time_idx],
                 path_q[0],
                 path_q[1],
-                bottle_high,
-                cross_high,
+                labels=("short", "moderate", "long"),
             ),
             "mean_shortest_path_hops": float(topo_stats["time_path_mean"][time_idx]),
+            "mean_shortest_path_zscore": zscore(
+                topo_stats["time_path_mean"][time_idx],
+                topo_stats["time_path_mean"],
+            ),
+            "p90_path_level": level_by_quantiles(
+                topo_stats["time_path_p90"][time_idx],
+                path_p90_q[0],
+                path_p90_q[1],
+                labels=("short-tail", "moderate-tail", "long-tail"),
+            ),
+            "p90_shortest_path_hops": float(topo_stats["time_path_p90"][time_idx]),
+            "bottleneck_level": level_by_quantiles(
+                topo_stats["time_bottleneck_concentration"][time_idx],
+                bottle_q[0],
+                bottle_q[1],
+                labels=("diffuse", "moderate", "concentrated"),
+            ),
             "bottleneck_concentration": float(
                 topo_stats["time_bottleneck_concentration"][time_idx]
+            ),
+            "bottleneck_zscore": zscore(
+                topo_stats["time_bottleneck_concentration"][time_idx],
+                topo_stats["time_bottleneck_concentration"],
+            ),
+            "cross_plane_pressure_level": level_by_quantiles(
+                topo_stats["time_cross_plane_pressure"][time_idx],
+                cross_path_q[0],
+                cross_path_q[1],
+                labels=("low", "moderate", "high"),
             ),
             "cross_plane_path_pressure": float(
                 topo_stats["time_cross_plane_pressure"][time_idx]
             ),
+            "cross_plane_path_pressure_zscore": zscore(
+                topo_stats["time_cross_plane_pressure"][time_idx],
+                topo_stats["time_cross_plane_pressure"],
+            ),
         }
         time_state["text"] = (
-            "Historical records indicate a {historical_load_level} global "
-            "network load ({historical_mean_global_load:.3f} MB per slice), "
-            "with a {historical_peak_level} peak level "
-            "({historical_peak_global_load:.3f} MB) and a {global_trend} "
-            "trend ({global_trend_ratio:+.3f}). Historical OD activity is "
-            "{active_od_level} (active ratio {active_od_ratio:.3f}). At the "
-            "current time, the topology is {topology_change_state} "
-            "(edge change rate {topology_change_rate:.3f}), and the routing "
-            "structure shows {path_bottleneck_state}; mean shortest path is "
-            "{mean_shortest_path_hops:.3f} hops, bottleneck concentration is "
-            "{bottleneck_concentration:.3f}, and cross-plane path pressure "
-            "is {cross_plane_path_pressure:.3f}."
+            "At this time slice, the current topology is {edge_density_level} "
+            "(edge density {edge_density:.3f}, normalized average degree "
+            "{average_degree:.3f}) with {reachable_od_level} OD reachability "
+            "(reachable ratio {reachable_od_ratio:.3f}). Inter-plane "
+            "connectivity is {inter_plane_edge_level} "
+            "(inter-plane edge ratio {inter_plane_edge_ratio:.3f}). The "
+            "topology is {topology_change_state} (edge change rate "
+            "{topology_change_rate:.3f}, z-score {topology_change_zscore:+.3f}). "
+            "Routing has {path_length_level} paths (mean "
+            "{mean_shortest_path_hops:.3f} hops, z-score "
+            "{mean_shortest_path_zscore:+.3f}) and a {p90_path_level} p90 path "
+            "length ({p90_shortest_path_hops:.3f} hops). Bottlenecks are "
+            "{bottleneck_level} (concentration {bottleneck_concentration:.3f}, "
+            "z-score {bottleneck_zscore:+.3f}), and cross-plane path pressure "
+            "is {cross_plane_pressure_level} "
+            "({cross_plane_path_pressure:.3f}, z-score "
+            "{cross_plane_path_pressure_zscore:+.3f})."
         ).format(**time_state)
         time_records.append(time_state)
 
