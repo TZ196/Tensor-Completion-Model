@@ -33,16 +33,20 @@ def level_by_quantiles(value, low_q, high_q, labels=("low", "medium", "high")):
 
 
 def trend_label(series, window=5, threshold=0.05):
-    if series.size < 2:
-        return "stable"
-    head = float(np.mean(series[:min(window, series.size)]))
-    tail = float(np.mean(series[-min(window, series.size):]))
-    ratio = (tail - head) / max(abs(head), EPS)
+    ratio = trend_ratio(series, window=window)
     if ratio < -threshold:
         return "decreasing"
     if ratio > threshold:
         return "increasing"
     return "stable"
+
+
+def trend_ratio(series, window=5):
+    if series.size < 2:
+        return 0.0
+    head = float(np.mean(series[:min(window, series.size)]))
+    tail = float(np.mean(series[-min(window, series.size):]))
+    return (tail - head) / max(abs(head), EPS)
 
 
 def normalized_entropy(weights):
@@ -323,6 +327,7 @@ def build_records(tensor, topology, history_len=30, target_start=0,
         labels=("low", "moderate", "high"),
     )
     global_trend = trend_label(global_load)
+    global_trend_value = trend_ratio(global_load)
     active_od_level = activity_label(active_od)
 
     source_records = []
@@ -333,12 +338,17 @@ def build_records(tensor, topology, history_len=30, target_start=0,
         time_state = {
             "time_index": time_idx,
             "historical_load_level": historical_load_level,
+            "historical_mean_global_load": float(np.mean(global_load)),
             "historical_peak_level": historical_peak_level,
+            "historical_peak_global_load": float(global_peak),
             "global_trend": global_trend,
+            "global_trend_ratio": float(global_trend_value),
             "active_od_level": active_od_level,
+            "active_od_ratio": float(active_od),
             "topology_change_state": change_label(
                 topo_stats["time_change"][time_idx]
             ),
+            "topology_change_rate": float(topo_stats["time_change"][time_idx]),
             "path_bottleneck_state": path_bottleneck_state(
                 time_idx,
                 topo_stats,
@@ -347,14 +357,27 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                 bottle_high,
                 cross_high,
             ),
+            "mean_shortest_path_hops": float(topo_stats["time_path_mean"][time_idx]),
+            "bottleneck_concentration": float(
+                topo_stats["time_bottleneck_concentration"][time_idx]
+            ),
+            "cross_plane_path_pressure": float(
+                topo_stats["time_cross_plane_pressure"][time_idx]
+            ),
         }
         time_state["text"] = (
             "Historical records indicate a {historical_load_level} global "
-            "network load with a {historical_peak_level} peak level and a "
-            "{global_trend} trend. Historical OD activity is "
-            "{active_od_level}. At the current time, the topology is "
-            "{topology_change_state}, and the routing structure shows "
-            "{path_bottleneck_state}."
+            "network load ({historical_mean_global_load:.3f} MB per slice), "
+            "with a {historical_peak_level} peak level "
+            "({historical_peak_global_load:.3f} MB) and a {global_trend} "
+            "trend ({global_trend_ratio:+.3f}). Historical OD activity is "
+            "{active_od_level} (active ratio {active_od_ratio:.3f}). At the "
+            "current time, the topology is {topology_change_state} "
+            "(edge change rate {topology_change_rate:.3f}), and the routing "
+            "structure shows {path_bottleneck_state}; mean shortest path is "
+            "{mean_shortest_path_hops:.3f} hops, bottleneck concentration is "
+            "{bottleneck_concentration:.3f}, and cross-plane path pressure "
+            "is {cross_plane_path_pressure:.3f}."
         ).format(**time_state)
         time_records.append(time_state)
 
@@ -367,20 +390,25 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                     out_mean_q[0],
                     out_mean_q[1],
                 ),
+                "mean_out_load": float(out_mean[sat]),
                 "peak_out_level": level_by_quantiles(
                     out_peak[sat],
                     out_peak_q[0],
                     out_peak_q[1],
                     labels=("low", "moderate", "high"),
                 ),
+                "peak_out_load": float(out_peak[sat]),
                 "out_trend": trend_label(outbound[:, sat]),
+                "out_trend_ratio": float(trend_ratio(outbound[:, sat])),
                 "destination_diversity": diversity_label(source_diversity[sat]),
+                "destination_entropy": float(source_diversity[sat]),
                 "cross_plane_out_level": level_by_quantiles(
                     cross_out[sat],
                     cross_out_q[0],
                     cross_out_q[1],
                     labels=("low", "moderate", "high"),
                 ),
+                "cross_plane_out_ratio": float(cross_out[sat]),
                 "source_topology_role": topology_role(
                     sat,
                     time_idx,
@@ -389,14 +417,27 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                     central_q[1],
                     bottleneck_high,
                 ),
+                "source_closeness": float(topo_stats["closeness"][time_idx, sat]),
+                "source_bottleneck_exposure": float(
+                    topo_stats["bottleneck_exposure"][time_idx, sat]
+                ),
+                "source_neighbor_change": float(
+                    topo_stats["neighbor_change"][time_idx, sat]
+                ),
             }
             record["text"] = (
                 "This satellite has a {mean_out_level} historical outbound "
-                "load and a {peak_out_level} peak load. Its outbound traffic "
-                "trend is {out_trend}. Its destination distribution is "
-                "{destination_diversity}, with a {cross_plane_out_level} "
-                "cross-plane sending tendency. Under the current topology, "
-                "it has a {source_topology_role} source-side structural role."
+                "load ({mean_out_load:.3f} MB per slice) and a "
+                "{peak_out_level} peak load ({peak_out_load:.3f} MB). Its "
+                "outbound traffic trend is {out_trend} "
+                "({out_trend_ratio:+.3f}). Its destination distribution is "
+                "{destination_diversity} (entropy {destination_entropy:.3f}), "
+                "with a {cross_plane_out_level} cross-plane sending tendency "
+                "(ratio {cross_plane_out_ratio:.3f}). Under the current "
+                "topology, its source-side structural role is "
+                "{source_topology_role}; closeness is {source_closeness:.3f}, "
+                "bottleneck exposure is {source_bottleneck_exposure:.3f}, "
+                "and neighbor change is {source_neighbor_change:.3f}."
             ).format(**record)
             source_records.append(record)
 
@@ -408,20 +449,25 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                     in_mean_q[0],
                     in_mean_q[1],
                 ),
+                "mean_in_load": float(in_mean[sat]),
                 "peak_in_level": level_by_quantiles(
                     in_peak[sat],
                     in_peak_q[0],
                     in_peak_q[1],
                     labels=("low", "moderate", "high"),
                 ),
+                "peak_in_load": float(in_peak[sat]),
                 "in_trend": trend_label(inbound[:, sat]),
+                "in_trend_ratio": float(trend_ratio(inbound[:, sat])),
                 "source_diversity": diversity_label(dest_diversity[sat]),
+                "source_entropy": float(dest_diversity[sat]),
                 "cross_plane_in_level": level_by_quantiles(
                     cross_in[sat],
                     cross_in_q[0],
                     cross_in_q[1],
                     labels=("low", "moderate", "high"),
                 ),
+                "cross_plane_in_ratio": float(cross_in[sat]),
                 "destination_topology_role": topology_role(
                     sat,
                     time_idx,
@@ -430,15 +476,30 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                     central_q[1],
                     bottleneck_high,
                 ),
+                "destination_closeness": float(
+                    topo_stats["closeness"][time_idx, sat]
+                ),
+                "destination_bottleneck_exposure": float(
+                    topo_stats["bottleneck_exposure"][time_idx, sat]
+                ),
+                "destination_neighbor_change": float(
+                    topo_stats["neighbor_change"][time_idx, sat]
+                ),
             }
             dest_record["text"] = (
                 "This satellite has a {mean_in_level} historical inbound "
-                "load and a {peak_in_level} peak load. Its inbound traffic "
-                "trend is {in_trend}. Its source distribution is "
-                "{source_diversity}, with a {cross_plane_in_level} "
-                "cross-plane receiving tendency. Under the current topology, "
-                "it has a {destination_topology_role} destination-side "
-                "structural role."
+                "load ({mean_in_load:.3f} MB per slice) and a "
+                "{peak_in_level} peak load ({peak_in_load:.3f} MB). Its "
+                "inbound traffic trend is {in_trend} "
+                "({in_trend_ratio:+.3f}). Its source distribution is "
+                "{source_diversity} (entropy {source_entropy:.3f}), with a "
+                "{cross_plane_in_level} cross-plane receiving tendency "
+                "(ratio {cross_plane_in_ratio:.3f}). Under the current "
+                "topology, its destination-side structural role is "
+                "{destination_topology_role}; closeness is "
+                "{destination_closeness:.3f}, bottleneck exposure is "
+                "{destination_bottleneck_exposure:.3f}, and neighbor change "
+                "is {destination_neighbor_change:.3f}."
             ).format(**dest_record)
             destination_records.append(dest_record)
 
