@@ -105,6 +105,15 @@ def load_mode_text_embeddings(text_dir):
     source_path = os.path.join(text_dir, "source_text_embeddings.npy")
     destination_path = os.path.join(text_dir, "destination_text_embeddings.npy")
     time_path = os.path.join(text_dir, "time_text_embeddings.npy")
+    source_numeric_path = os.path.join(
+        text_dir,
+        "source_text_numeric_features.npy",
+    )
+    destination_numeric_path = os.path.join(
+        text_dir,
+        "destination_text_numeric_features.npy",
+    )
+    time_numeric_path = os.path.join(text_dir, "time_text_numeric_features.npy")
     metadata_path = os.path.join(text_dir, "text_embedding_metadata.json")
     source = np.load(source_path).astype("float32")
     destination = np.load(destination_path).astype("float32")
@@ -117,12 +126,60 @@ def load_mode_text_embeddings(text_dir):
         raise ValueError("time text embeddings must have shape [time,dim]")
     if time.shape[1] != source.shape[2]:
         raise ValueError("source/destination/time text embedding dims differ")
+    source_numeric = None
+    destination_numeric = None
+    time_numeric = None
+    if (
+        os.path.exists(source_numeric_path) or
+        os.path.exists(destination_numeric_path) or
+        os.path.exists(time_numeric_path)
+    ):
+        if not (
+            os.path.exists(source_numeric_path) and
+            os.path.exists(destination_numeric_path) and
+            os.path.exists(time_numeric_path)
+        ):
+            raise ValueError(
+                "source, destination, and time text numeric feature files "
+                "must be provided together"
+            )
+        source_numeric = np.load(source_numeric_path).astype("float32")
+        destination_numeric = np.load(destination_numeric_path).astype("float32")
+        time_numeric = np.load(time_numeric_path).astype("float32")
+        if source_numeric.ndim != 3 or source_numeric.shape[:2] != source.shape[:2]:
+            raise ValueError(
+                "source text numeric features must have shape [time,node,dim]"
+            )
+        if (
+            destination_numeric.ndim != 3 or
+            destination_numeric.shape[:2] != source.shape[:2]
+        ):
+            raise ValueError(
+                "destination text numeric features must have shape [time,node,dim]"
+            )
+        if time_numeric.ndim != 2 or time_numeric.shape[0] != source.shape[0]:
+            raise ValueError("time text numeric features must have shape [time,dim]")
+        if not (
+            np.all(np.isfinite(source_numeric)) and
+            np.all(np.isfinite(destination_numeric)) and
+            np.all(np.isfinite(time_numeric))
+        ):
+            raise ValueError("Text numeric features contain NaN or Inf")
     metadata = {}
     if os.path.exists(metadata_path):
         with open(metadata_path, "r", encoding="utf-8") as f:
             metadata = json.load(f)
     target_start = int(metadata.get("target_start", 0))
-    return source, destination, time, metadata, target_start
+    return (
+        source,
+        destination,
+        time,
+        source_numeric,
+        destination_numeric,
+        time_numeric,
+        metadata,
+        target_start,
+    )
 
 
 def parse_args():
@@ -295,6 +352,9 @@ def main():
     source_text_embeddings = None
     destination_text_embeddings = None
     time_text_embeddings = None
+    source_text_numeric_features = None
+    destination_text_numeric_features = None
+    time_text_numeric_features = None
     text_metadata = {}
     text_target_start = 0
     if args.use_mode_text:
@@ -302,12 +362,28 @@ def main():
             source_text_embeddings,
             destination_text_embeddings,
             time_text_embeddings,
+            source_text_numeric_features,
+            destination_text_numeric_features,
+            time_text_numeric_features,
             text_metadata,
             text_target_start,
         ) = load_mode_text_embeddings(args.mode_text_dir)
         print("Mode text source embeddings:", source_text_embeddings.shape)
         print("Mode text destination embeddings:", destination_text_embeddings.shape)
         print("Mode text time embeddings:", time_text_embeddings.shape)
+        if source_text_numeric_features is not None:
+            print(
+                "Mode text source numeric features:",
+                source_text_numeric_features.shape,
+            )
+            print(
+                "Mode text destination numeric features:",
+                destination_text_numeric_features.shape,
+            )
+            print(
+                "Mode text time numeric features:",
+                time_text_numeric_features.shape,
+            )
         print("Mode text target start:", text_target_start)
     else:
         print("Mode text embeddings: disabled")
@@ -343,6 +419,9 @@ def main():
         source_text_embeddings=source_text_embeddings,
         destination_text_embeddings=destination_text_embeddings,
         time_text_embeddings=time_text_embeddings,
+        source_text_numeric_features=source_text_numeric_features,
+        destination_text_numeric_features=destination_text_numeric_features,
+        time_text_numeric_features=time_text_numeric_features,
         text_hidden_dim=args.text_hidden_dim,
         text_align_dim=args.text_align_dim,
         text_alpha=args.text_alpha,
@@ -414,6 +493,19 @@ def main():
             "use_mode_text": args.use_mode_text,
             "mode_text_dir": args.mode_text_dir,
             "text_embedding_metadata": text_metadata,
+            "use_text_numeric_features": source_text_numeric_features is not None,
+            "source_text_numeric_shape": (
+                None if source_text_numeric_features is None else
+                [int(v) for v in source_text_numeric_features.shape]
+            ),
+            "destination_text_numeric_shape": (
+                None if destination_text_numeric_features is None else
+                [int(v) for v in destination_text_numeric_features.shape]
+            ),
+            "time_text_numeric_shape": (
+                None if time_text_numeric_features is None else
+                [int(v) for v in time_text_numeric_features.shape]
+            ),
             "text_hidden_dim": args.text_hidden_dim,
             "text_align_dim": args.text_align_dim,
             "text_alpha": args.text_alpha,

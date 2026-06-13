@@ -5,6 +5,45 @@ import os
 import numpy as np
 
 
+SOURCE_NUMERIC_FIELDS = [
+    "mean_out_load",
+    "peak_out_load",
+    "out_trend_ratio",
+    "destination_entropy",
+    "cross_plane_out_ratio",
+    "source_closeness",
+    "source_bottleneck_exposure",
+    "source_neighbor_change",
+]
+
+DESTINATION_NUMERIC_FIELDS = [
+    "mean_in_load",
+    "peak_in_load",
+    "in_trend_ratio",
+    "source_entropy",
+    "cross_plane_in_ratio",
+    "destination_closeness",
+    "destination_bottleneck_exposure",
+    "destination_neighbor_change",
+]
+
+TIME_NUMERIC_FIELDS = [
+    "edge_density",
+    "average_degree",
+    "inter_plane_edge_ratio",
+    "reachable_od_ratio",
+    "topology_change_rate",
+    "topology_change_zscore",
+    "mean_shortest_path_hops",
+    "mean_shortest_path_zscore",
+    "p90_shortest_path_hops",
+    "bottleneck_concentration",
+    "bottleneck_zscore",
+    "cross_plane_path_pressure",
+    "cross_plane_path_pressure_zscore",
+]
+
+
 def read_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -80,7 +119,7 @@ def encode_texts(encoder_type, encoder, texts, batch_size=32, normalize=True):
     return embeddings
 
 
-def ordered_texts(payload, expected_kind):
+def ordered_records(payload, expected_kind):
     metadata = payload["metadata"]
     records = payload["records"]
     target_times = metadata["target_times"]
@@ -96,12 +135,35 @@ def ordered_texts(payload, expected_kind):
             records,
             key=lambda item: (item["time_index"], item["satellite_id"]),
         )
-        return [record["text"] for record in records], metadata
+        return records, metadata
 
     if len(records) != len(target_times):
         raise ValueError("time records count does not match target_times")
     records = sorted(records, key=lambda item: item["time_index"])
-    return [record["text"] for record in records], metadata
+    return records, metadata
+
+
+def normalize_numeric_features(values):
+    mean = values.mean(axis=0)
+    std = values.std(axis=0)
+    std = np.where(std < 1e-6, 1.0, std)
+    return ((values - mean) / std).astype("float32"), mean, std
+
+
+def extract_numeric_features(records, field_names, expected_kind):
+    rows = []
+    for record in records:
+        missing = [name for name in field_names if name not in record]
+        if missing:
+            raise KeyError(
+                "%s record is missing numeric fields: %s" %
+                (expected_kind, missing)
+            )
+        rows.append([float(record[name]) for name in field_names])
+    values = np.asarray(rows, dtype="float32")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("%s numeric features contain NaN or Inf" % expected_kind)
+    return normalize_numeric_features(values)
 
 
 def parse_args():
@@ -129,15 +191,35 @@ def main():
         os.path.join(args.text_dir, "destination_text_records.json")
     )
     time_payload = read_json(os.path.join(args.text_dir, "time_text_records.json"))
-    source_texts, metadata = ordered_texts(source_payload, "source")
-    destination_texts, dest_metadata = ordered_texts(destination_payload, "destination")
-    time_texts, time_metadata = ordered_texts(time_payload, "time")
+    source_records, metadata = ordered_records(source_payload, "source")
+    destination_records, dest_metadata = ordered_records(
+        destination_payload,
+        "destination",
+    )
+    time_records, time_metadata = ordered_records(time_payload, "time")
     if metadata["target_times"] != dest_metadata["target_times"]:
         raise ValueError("source/destination target times do not match")
     if metadata["target_times"] != time_metadata["target_times"]:
         raise ValueError("source/time target times do not match")
     target_count = len(metadata["target_times"])
     node_count = int(metadata["node_count"])
+    source_texts = [record["text"] for record in source_records]
+    destination_texts = [record["text"] for record in destination_records]
+    time_texts = [record["text"] for record in time_records]
+
+    source_numeric, source_numeric_mean, source_numeric_std = (
+        extract_numeric_features(source_records, SOURCE_NUMERIC_FIELDS, "source")
+    )
+    destination_numeric, destination_numeric_mean, destination_numeric_std = (
+        extract_numeric_features(
+            destination_records,
+            DESTINATION_NUMERIC_FIELDS,
+            "destination",
+        )
+    )
+    time_numeric, time_numeric_mean, time_numeric_std = (
+        extract_numeric_features(time_records, TIME_NUMERIC_FIELDS, "time")
+    )
 
     source_embeddings = encode_texts(
         encoder_type,
@@ -167,15 +249,34 @@ def main():
         node_count,
         dim,
     )
+    source_numeric = source_numeric.reshape(
+        target_count,
+        node_count,
+        len(SOURCE_NUMERIC_FIELDS),
+    )
+    destination_numeric = destination_numeric.reshape(
+        target_count,
+        node_count,
+        len(DESTINATION_NUMERIC_FIELDS),
+    )
     if destination_embeddings.shape[-1] != dim or time_embeddings.shape[-1] != dim:
         raise ValueError("source/destination/time embedding dimensions differ")
 
     np.save(os.path.join(args.text_dir, "source_text_embeddings.npy"), source_embeddings)
     np.save(
+        os.path.join(args.text_dir, "source_text_numeric_features.npy"),
+        source_numeric,
+    )
+    np.save(
         os.path.join(args.text_dir, "destination_text_embeddings.npy"),
         destination_embeddings,
     )
+    np.save(
+        os.path.join(args.text_dir, "destination_text_numeric_features.npy"),
+        destination_numeric,
+    )
     np.save(os.path.join(args.text_dir, "time_text_embeddings.npy"), time_embeddings)
+    np.save(os.path.join(args.text_dir, "time_text_numeric_features.npy"), time_numeric)
     with open(os.path.join(args.text_dir, "text_embedding_metadata.json"), "w",
               encoding="utf-8") as f:
         json.dump({
@@ -184,10 +285,27 @@ def main():
             "encoder_type": encoder_type,
             "model_path": args.model_path,
             "normalize": normalize,
+            "numeric_side_channel": True,
+            "source_numeric_fields": SOURCE_NUMERIC_FIELDS,
+            "destination_numeric_fields": DESTINATION_NUMERIC_FIELDS,
+            "time_numeric_fields": TIME_NUMERIC_FIELDS,
+            "source_numeric_mean": source_numeric_mean.astype(float).tolist(),
+            "source_numeric_std": source_numeric_std.astype(float).tolist(),
+            "destination_numeric_mean": (
+                destination_numeric_mean.astype(float).tolist()
+            ),
+            "destination_numeric_std": (
+                destination_numeric_std.astype(float).tolist()
+            ),
+            "time_numeric_mean": time_numeric_mean.astype(float).tolist(),
+            "time_numeric_std": time_numeric_std.astype(float).tolist(),
         }, f, indent=2, ensure_ascii=False)
     print("Saved source embeddings:", source_embeddings.shape)
+    print("Saved source numeric features:", source_numeric.shape)
     print("Saved destination embeddings:", destination_embeddings.shape)
+    print("Saved destination numeric features:", destination_numeric.shape)
     print("Saved time embeddings:", time_embeddings.shape)
+    print("Saved time numeric features:", time_numeric.shape)
 
 
 if __name__ == "__main__":

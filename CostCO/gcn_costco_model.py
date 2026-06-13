@@ -324,7 +324,9 @@ class ModeWiseTextLayer(k.layers.Layer):
     """Inject source/destination/time text embeddings into CoSTCo modes."""
 
     def __init__(self, source_text_embeddings, destination_text_embeddings,
-                 time_text_embeddings, rank=50, hidden_dim=64, align_dim=64,
+                 time_text_embeddings, source_text_numeric_features=None,
+                 destination_text_numeric_features=None,
+                 time_text_numeric_features=None, rank=50, hidden_dim=64, align_dim=64,
                  alpha_init=0.1, source_text_align_weight=0.0,
                  destination_text_align_weight=0.0,
                  time_text_align_weight=0.0, alignment_temperature=0.2,
@@ -343,8 +345,43 @@ class ModeWiseTextLayer(k.layers.Layer):
             raise ValueError("time_text_embeddings must have shape [time,dim]")
         if source.shape != destination.shape:
             raise ValueError("source/destination text embeddings must share shape")
-        if source.shape[0] != time.shape[0] or source.shape[2] != time.shape[1]:
-            raise ValueError("source/destination/time text embedding shapes disagree")
+        if source.shape[0] != time.shape[0]:
+            raise ValueError("source/destination/time text time lengths disagree")
+        numeric_inputs = [
+            source_text_numeric_features,
+            destination_text_numeric_features,
+            time_text_numeric_features,
+        ]
+        if any(value is not None for value in numeric_inputs):
+            if any(value is None for value in numeric_inputs):
+                raise ValueError(
+                    "source, destination, and time text numeric features "
+                    "must be provided together"
+                )
+            source_numeric = np.asarray(source_text_numeric_features, dtype="float32")
+            destination_numeric = np.asarray(
+                destination_text_numeric_features,
+                dtype="float32",
+            )
+            time_numeric = np.asarray(time_text_numeric_features, dtype="float32")
+            if source_numeric.ndim != 3 or source_numeric.shape[:2] != source.shape[:2]:
+                raise ValueError(
+                    "source_text_numeric_features must have shape [time,node,dim]"
+                )
+            if (
+                destination_numeric.ndim != 3 or
+                destination_numeric.shape[:2] != destination.shape[:2]
+            ):
+                raise ValueError(
+                    "destination_text_numeric_features must have shape [time,node,dim]"
+                )
+            if time_numeric.ndim != 2 or time_numeric.shape[0] != time.shape[0]:
+                raise ValueError(
+                    "time_text_numeric_features must have shape [time,dim]"
+                )
+            source = np.concatenate([source, source_numeric], axis=-1)
+            destination = np.concatenate([destination, destination_numeric], axis=-1)
+            time = np.concatenate([time, time_numeric], axis=-1)
 
         self.rank = int(rank)
         self.hidden_dim = int(hidden_dim)
@@ -358,7 +395,10 @@ class ModeWiseTextLayer(k.layers.Layer):
         self.target_start = int(target_start)
         self.text_time_len = int(source.shape[0])
         self.node_count = int(source.shape[1])
-        self.text_dim = int(source.shape[2])
+        self.source_text_dim = int(source.shape[2])
+        self.destination_text_dim = int(destination.shape[2])
+        self.time_text_dim = int(time.shape[1])
+        self.text_dim = self.source_text_dim
         self.source_text_embeddings = tf.constant(source, dtype=tf.float32)
         self.destination_text_embeddings = tf.constant(destination, dtype=tf.float32)
         self.time_text_embeddings = tf.constant(time, dtype=tf.float32)
@@ -598,6 +638,9 @@ class ModeWiseTextLayer(k.layers.Layer):
             "text_time_len": self.text_time_len,
             "node_count": self.node_count,
             "text_dim": self.text_dim,
+            "source_text_dim": self.source_text_dim,
+            "destination_text_dim": self.destination_text_dim,
+            "time_text_dim": self.time_text_dim,
         })
         return config
 
@@ -707,6 +750,9 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       source_text_embeddings=None,
                       destination_text_embeddings=None,
                       time_text_embeddings=None,
+                      source_text_numeric_features=None,
+                      destination_text_numeric_features=None,
+                      time_text_numeric_features=None,
                       text_hidden_dim=64, text_align_dim=64,
                       text_alpha=0.1, source_text_align_weight=0.0,
                       destination_text_align_weight=0.0,
@@ -782,6 +828,9 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
             source_text_embeddings=source_text_embeddings,
             destination_text_embeddings=destination_text_embeddings,
             time_text_embeddings=time_text_embeddings,
+            source_text_numeric_features=source_text_numeric_features,
+            destination_text_numeric_features=destination_text_numeric_features,
+            time_text_numeric_features=time_text_numeric_features,
             rank=rank,
             hidden_dim=text_hidden_dim,
             align_dim=text_align_dim,

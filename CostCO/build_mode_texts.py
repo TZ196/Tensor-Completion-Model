@@ -439,22 +439,12 @@ def build_records(tensor, topology, history_len=30, target_start=0,
         }
         time_state["text"] = (
             "At this time slice, the current topology is {edge_density_level} "
-            "(edge density {edge_density:.3f}, normalized average degree "
-            "{average_degree:.3f}) with {reachable_od_level} OD reachability "
-            "(reachable ratio {reachable_od_ratio:.3f}). Inter-plane "
-            "connectivity is {inter_plane_edge_level} "
-            "(inter-plane edge ratio {inter_plane_edge_ratio:.3f}). The "
-            "topology is {topology_change_state} (edge change rate "
-            "{topology_change_rate:.3f}, z-score {topology_change_zscore:+.3f}). "
-            "Routing has {path_length_level} paths (mean "
-            "{mean_shortest_path_hops:.3f} hops, z-score "
-            "{mean_shortest_path_zscore:+.3f}) and a {p90_path_level} p90 path "
-            "length ({p90_shortest_path_hops:.3f} hops). Bottlenecks are "
-            "{bottleneck_level} (concentration {bottleneck_concentration:.3f}, "
-            "z-score {bottleneck_zscore:+.3f}), and cross-plane path pressure "
-            "is {cross_plane_pressure_level} "
-            "({cross_plane_path_pressure:.3f}, z-score "
-            "{cross_plane_path_pressure_zscore:+.3f})."
+            "with {reachable_od_level} OD reachability. Inter-plane "
+            "connectivity is {inter_plane_edge_level}. The topology is "
+            "{topology_change_state}. Routing has {path_length_level} paths "
+            "and a {p90_path_level} p90 path length. Bottlenecks are "
+            "{bottleneck_level}, and cross-plane path pressure is "
+            "{cross_plane_pressure_level}."
         ).format(**time_state)
         time_records.append(time_state)
 
@@ -504,17 +494,11 @@ def build_records(tensor, topology, history_len=30, target_start=0,
             }
             record["text"] = (
                 "This satellite has a {mean_out_level} historical outbound "
-                "load ({mean_out_load:.3f} MB per slice) and a "
-                "{peak_out_level} peak load ({peak_out_load:.3f} MB). Its "
-                "outbound traffic trend is {out_trend} "
-                "({out_trend_ratio:+.3f}). Its destination distribution is "
-                "{destination_diversity} (entropy {destination_entropy:.3f}), "
-                "with a {cross_plane_out_level} cross-plane sending tendency "
-                "(ratio {cross_plane_out_ratio:.3f}). Under the current "
-                "topology, its source-side structural role is "
-                "{source_topology_role}; closeness is {source_closeness:.3f}, "
-                "bottleneck exposure is {source_bottleneck_exposure:.3f}, "
-                "and neighbor change is {source_neighbor_change:.3f}."
+                "load and a {peak_out_level} peak load. Its outbound traffic "
+                "trend is {out_trend}. Its destination distribution is "
+                "{destination_diversity}, with a {cross_plane_out_level} "
+                "cross-plane sending tendency. Under the current topology, "
+                "its source-side structural role is {source_topology_role}."
             ).format(**record)
             source_records.append(record)
 
@@ -565,18 +549,12 @@ def build_records(tensor, topology, history_len=30, target_start=0,
             }
             dest_record["text"] = (
                 "This satellite has a {mean_in_level} historical inbound "
-                "load ({mean_in_load:.3f} MB per slice) and a "
-                "{peak_in_level} peak load ({peak_in_load:.3f} MB). Its "
-                "inbound traffic trend is {in_trend} "
-                "({in_trend_ratio:+.3f}). Its source distribution is "
-                "{source_diversity} (entropy {source_entropy:.3f}), with a "
-                "{cross_plane_in_level} cross-plane receiving tendency "
-                "(ratio {cross_plane_in_ratio:.3f}). Under the current "
-                "topology, its destination-side structural role is "
-                "{destination_topology_role}; closeness is "
-                "{destination_closeness:.3f}, bottleneck exposure is "
-                "{destination_bottleneck_exposure:.3f}, and neighbor change "
-                "is {destination_neighbor_change:.3f}."
+                "load and a {peak_in_level} peak load. Its inbound traffic "
+                "trend is {in_trend}. Its source distribution is "
+                "{source_diversity}, with a {cross_plane_in_level} "
+                "cross-plane receiving tendency. Under the current topology, "
+                "its destination-side structural role is "
+                "{destination_topology_role}."
             ).format(**dest_record)
             destination_records.append(dest_record)
 
@@ -587,7 +565,7 @@ def build_records(tensor, topology, history_len=30, target_start=0,
         "target_times": target_times,
         "node_count": source_count,
         "planes": planes,
-        "text_generation": "deterministic_template",
+        "text_generation": "deterministic_template_with_numeric_side_channel",
     }
     return source_records, destination_records, time_records, metadata
 
