@@ -227,9 +227,10 @@ def parse_args():
     parser.add_argument("--mode-text-dir", default="mode_text_data")
     parser.add_argument(
         "--text-fusion-mode",
-        choices=["concat", "dual"],
+        choices=["concat", "gated_numeric"],
         default="concat",
     )
+    parser.add_argument("--numeric-alpha-init", type=float, default=0.02)
     parser.add_argument("--text-hidden-dim", type=int, default=64)
     parser.add_argument("--text-align-dim", type=int, default=64)
     parser.add_argument("--text-alpha", type=float, default=0.1)
@@ -428,6 +429,7 @@ def main():
         destination_text_numeric_features=destination_text_numeric_features,
         time_text_numeric_features=time_text_numeric_features,
         text_fusion_mode=args.text_fusion_mode,
+        numeric_alpha_init=args.numeric_alpha_init,
         text_hidden_dim=args.text_hidden_dim,
         text_align_dim=args.text_align_dim,
         text_alpha=args.text_alpha,
@@ -499,6 +501,7 @@ def main():
             "use_mode_text": args.use_mode_text,
             "mode_text_dir": args.mode_text_dir,
             "text_fusion_mode": args.text_fusion_mode,
+            "numeric_alpha_init": args.numeric_alpha_init,
             "text_embedding_metadata": text_metadata,
             "use_text_numeric_features": source_text_numeric_features is not None,
             "source_text_numeric_shape": (

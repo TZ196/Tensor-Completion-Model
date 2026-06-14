@@ -14,6 +14,7 @@ GCN_DIM="${GCN_DIM:-128}"
 LR="${LR:-1e-3}"
 EPOCHS="${EPOCHS:-200}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
+NUMERIC_ALPHA_INIT="${NUMERIC_ALPHA_INIT:-0.02}"
 SOURCE_TEXT_ALIGN_WEIGHT="${SOURCE_TEXT_ALIGN_WEIGHT:-0.0005}"
 DESTINATION_TEXT_ALIGN_WEIGHT="${DESTINATION_TEXT_ALIGN_WEIGHT:-0.0001}"
 TIME_TEXT_ALIGN_WEIGHT="${TIME_TEXT_ALIGN_WEIGHT:-0.0008}"
@@ -23,14 +24,14 @@ TEMPORAL_DELTA="${TEMPORAL_DELTA:-2}"
 mkdir -p logs results
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
-master_log="logs/mode_text_dual_ablation_${timestamp}.log"
-pid_file="logs/mode_text_dual_ablation.pid"
+master_log="logs/mode_text_gated_ablation_${timestamp}.log"
+pid_file="logs/mode_text_gated_ablation.pid"
 
 if [[ "${1:-}" != "--foreground" ]]; then
   nohup bash "$0" --foreground > "$master_log" 2>&1 &
   pid="$!"
   echo "$pid" > "$pid_file"
-  echo "Started mode text dual ablation in background."
+  echo "Started mode text gated ablation in background."
   echo "PID: $pid"
   echo "Master log: $SCRIPT_DIR/$master_log"
   echo "PID file: $SCRIPT_DIR/$pid_file"
@@ -38,11 +39,12 @@ if [[ "${1:-}" != "--foreground" ]]; then
   exit 0
 fi
 
-echo "===== Mode Text Dual-Fusion Ablation ====="
+echo "===== Mode Text Gated Numeric Ablation ====="
 echo "Start time: $(date)"
 echo "Work dir: $SCRIPT_DIR"
 echo "Text dir: $TEXT_DIR"
 echo "Seed: $SEED"
+echo "Numeric alpha init: $NUMERIC_ALPHA_INIT"
 echo
 
 required=(
@@ -94,33 +96,28 @@ align_args=(
   --temporal-delta "$TEMPORAL_DELTA"
 )
 
-run_step "text_dual_D0_gcn_baseline_seed${SEED}" \
+run_step "text_gated_G0_gcn_baseline_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
   "${base_args[@]}" \
-  --metrics-path "results/text_dual_D0_gcn_baseline_seed${SEED}.json"
+  --metrics-path "results/text_gated_G0_gcn_baseline_seed${SEED}.json"
 
-run_step "text_dual_D1_concat_no_align_seed${SEED}" \
+run_step "text_gated_G1_concat_conservative_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
   "${base_args[@]}" \
   "${text_args[@]}" \
   --text-fusion-mode concat \
-  --metrics-path "results/text_dual_D1_concat_no_align_seed${SEED}.json"
-
-run_step "text_dual_D2_dual_no_align_seed${SEED}" \
-  "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  "${base_args[@]}" \
-  "${text_args[@]}" \
-  --text-fusion-mode dual \
-  --metrics-path "results/text_dual_D2_dual_no_align_seed${SEED}.json"
-
-run_step "text_dual_D3_dual_conservative_align_seed${SEED}" \
-  "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  "${base_args[@]}" \
-  "${text_args[@]}" \
-  --text-fusion-mode dual \
   "${align_args[@]}" \
-  --metrics-path "results/text_dual_D3_dual_conservative_align_seed${SEED}.json"
+  --metrics-path "results/text_gated_G1_concat_conservative_align_seed${SEED}.json"
 
-echo "Dual-fusion ablation finished at $(date)"
+run_step "text_gated_G2_gated_conservative_align_seed${SEED}" \
+  "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
+  "${base_args[@]}" \
+  "${text_args[@]}" \
+  --text-fusion-mode gated_numeric \
+  --numeric-alpha-init "$NUMERIC_ALPHA_INIT" \
+  "${align_args[@]}" \
+  --metrics-path "results/text_gated_G2_gated_conservative_align_seed${SEED}.json"
+
+echo "Gated numeric ablation finished at $(date)"
 echo "Result files:"
-ls -1 results/text_dual_D*seed"${SEED}".json 2>/dev/null || true
+ls -1 results/text_gated_G*seed"${SEED}".json 2>/dev/null || true

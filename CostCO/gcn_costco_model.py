@@ -331,10 +331,13 @@ class ModeWiseTextLayer(k.layers.Layer):
                  destination_text_align_weight=0.0,
                  time_text_align_weight=0.0, alignment_temperature=0.2,
                  temporal_delta=2, target_start=0, text_fusion_mode="concat",
+                 numeric_alpha_init=0.02,
                  **kwargs):
         super().__init__(**kwargs)
-        if text_fusion_mode not in ("concat", "dual"):
-            raise ValueError("text_fusion_mode must be 'concat' or 'dual'")
+        if text_fusion_mode not in ("concat", "gated_numeric"):
+            raise ValueError(
+                "text_fusion_mode must be 'concat' or 'gated_numeric'"
+            )
         source = np.asarray(source_text_embeddings, dtype="float32")
         destination = np.asarray(destination_text_embeddings, dtype="float32")
         time = np.asarray(time_text_embeddings, dtype="float32")
@@ -395,15 +398,17 @@ class ModeWiseTextLayer(k.layers.Layer):
                 source_numeric = None
                 destination_numeric = None
                 time_numeric = None
-        elif text_fusion_mode == "dual":
+        elif text_fusion_mode == "gated_numeric":
             raise ValueError(
-                "text_fusion_mode='dual' requires text numeric feature files"
+                "text_fusion_mode='%s' requires text numeric feature files" %
+                text_fusion_mode
             )
 
         self.rank = int(rank)
         self.hidden_dim = int(hidden_dim)
         self.align_dim = int(align_dim)
         self.text_fusion_mode = text_fusion_mode
+        self.numeric_alpha_init = float(numeric_alpha_init)
         self.alpha_init = float(alpha_init)
         self.source_text_align_weight = float(source_text_align_weight)
         self.destination_text_align_weight = float(destination_text_align_weight)
@@ -449,7 +454,7 @@ class ModeWiseTextLayer(k.layers.Layer):
         self.time_proj_2 = k.layers.Dense(rank)
         self.time_proj_norm_2 = k.layers.LayerNormalization()
 
-        if self.text_fusion_mode == "dual":
+        if self.text_fusion_mode == "gated_numeric":
             self.source_numeric_proj_1 = k.layers.Dense(hidden_dim)
             self.source_numeric_proj_norm_1 = k.layers.LayerNormalization()
             self.source_numeric_proj_act = k.layers.Activation("gelu")
@@ -512,6 +517,28 @@ class ModeWiseTextLayer(k.layers.Layer):
             initializer=initializer,
             trainable=True,
         )
+        if self.text_fusion_mode == "gated_numeric":
+            numeric_initializer = k.initializers.Constant(
+                init_alpha(self.numeric_alpha_init)
+            )
+            self.source_numeric_alpha_logit = self.add_weight(
+                name="source_numeric_alpha_logit",
+                shape=(),
+                initializer=numeric_initializer,
+                trainable=True,
+            )
+            self.destination_numeric_alpha_logit = self.add_weight(
+                name="destination_numeric_alpha_logit",
+                shape=(),
+                initializer=numeric_initializer,
+                trainable=True,
+            )
+            self.time_numeric_alpha_logit = self.add_weight(
+                name="time_numeric_alpha_logit",
+                shape=(),
+                initializer=numeric_initializer,
+                trainable=True,
+            )
         super().build(input_shape)
 
     def _project_source(self, x):
@@ -556,25 +583,28 @@ class ModeWiseTextLayer(k.layers.Layer):
         x = self.time_numeric_proj_2(x)
         return self.time_numeric_proj_norm_2(x)
 
-    def _fuse_dual_source(self, text_x, numeric_x):
+    def _fuse_gated_source(self, text_x, numeric_x):
         text_x = self._project_source(text_x)
         numeric_x = self._project_source_numeric(numeric_x)
         gate = self.source_numeric_gate(tf.concat([text_x, numeric_x], axis=-1))
-        return self.source_aux_norm(text_x + gate * numeric_x)
+        alpha = 0.2 * tf.sigmoid(self.source_numeric_alpha_logit)
+        return self.source_aux_norm(text_x + alpha * gate * numeric_x)
 
-    def _fuse_dual_destination(self, text_x, numeric_x):
+    def _fuse_gated_destination(self, text_x, numeric_x):
         text_x = self._project_destination(text_x)
         numeric_x = self._project_destination_numeric(numeric_x)
         gate = self.destination_numeric_gate(
             tf.concat([text_x, numeric_x], axis=-1)
         )
-        return self.destination_aux_norm(text_x + gate * numeric_x)
+        alpha = 0.2 * tf.sigmoid(self.destination_numeric_alpha_logit)
+        return self.destination_aux_norm(text_x + alpha * gate * numeric_x)
 
-    def _fuse_dual_time(self, text_x, numeric_x):
+    def _fuse_gated_time(self, text_x, numeric_x):
         text_x = self._project_time(text_x)
         numeric_x = self._project_time_numeric(numeric_x)
         gate = self.time_numeric_gate(tf.concat([text_x, numeric_x], axis=-1))
-        return self.time_aux_norm(text_x + gate * numeric_x)
+        alpha = 0.2 * tf.sigmoid(self.time_numeric_alpha_logit)
+        return self.time_aux_norm(text_x + alpha * gate * numeric_x)
 
     def _masked_infonce(self, left, right, mask=None):
         left = tf.math.l2_normalize(left, axis=-1)
@@ -669,7 +699,7 @@ class ModeWiseTextLayer(k.layers.Layer):
         )
         time_text_raw = tf.gather(self.time_text_embeddings, text_time)
 
-        if self.text_fusion_mode == "dual":
+        if self.text_fusion_mode == "gated_numeric":
             source_numeric_t = tf.gather(
                 self.source_text_numeric_features,
                 text_time,
@@ -687,15 +717,15 @@ class ModeWiseTextLayer(k.layers.Layer):
                 tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), dst], axis=1),
             )
             time_numeric_raw = tf.gather(self.time_text_numeric_features, text_time)
-            source_text = self._fuse_dual_source(
+            source_text = self._fuse_gated_source(
                 source_text_raw,
                 source_numeric_raw,
             )
-            destination_text = self._fuse_dual_destination(
+            destination_text = self._fuse_gated_destination(
                 destination_text_raw,
                 destination_numeric_raw,
             )
-            time_text = self._fuse_dual_time(time_text_raw, time_numeric_raw)
+            time_text = self._fuse_gated_time(time_text_raw, time_numeric_raw)
         else:
             source_text = self._project_source(source_text_raw)
             destination_text = self._project_destination(destination_text_raw)
@@ -763,6 +793,7 @@ class ModeWiseTextLayer(k.layers.Layer):
             "node_count": self.node_count,
             "text_dim": self.text_dim,
             "text_fusion_mode": self.text_fusion_mode,
+            "numeric_alpha_init": self.numeric_alpha_init,
             "source_text_dim": self.source_text_dim,
             "destination_text_dim": self.destination_text_dim,
             "time_text_dim": self.time_text_dim,
@@ -879,6 +910,7 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       destination_text_numeric_features=None,
                       time_text_numeric_features=None,
                       text_fusion_mode="concat",
+                      numeric_alpha_init=0.02,
                       text_hidden_dim=64, text_align_dim=64,
                       text_alpha=0.1, source_text_align_weight=0.0,
                       destination_text_align_weight=0.0,
@@ -958,6 +990,7 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
             destination_text_numeric_features=destination_text_numeric_features,
             time_text_numeric_features=time_text_numeric_features,
             text_fusion_mode=text_fusion_mode,
+            numeric_alpha_init=numeric_alpha_init,
             rank=rank,
             hidden_dim=text_hidden_dim,
             align_dim=text_align_dim,
