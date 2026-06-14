@@ -1,3 +1,10 @@
+import os
+import random
+
+os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
+os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras as k
@@ -30,9 +37,28 @@ def transform_indices(indices):
     return [indices[:, i] for i in range(indices.shape[1])]
 
 
-def configure_tensorflow(cpu_only=False, seed=0):
+def configure_tensorflow(cpu_only=False, seed=0, deterministic=True):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
+    try:
+        tf.keras.utils.set_random_seed(seed)
+    except AttributeError:
+        pass
+    if deterministic:
+        try:
+            tf.config.experimental.enable_op_determinism()
+        except Exception as exc:
+            print("Could not enable TensorFlow op determinism:", exc)
+        for setter in (
+            tf.config.threading.set_inter_op_parallelism_threads,
+            tf.config.threading.set_intra_op_parallelism_threads,
+        ):
+            try:
+                setter(1)
+            except RuntimeError as exc:
+                print("Could not set TensorFlow thread determinism:", exc)
 
     gpus = tf.config.list_physical_devices("GPU")
     if cpu_only:
@@ -40,7 +66,10 @@ def configure_tensorflow(cpu_only=False, seed=0):
         return []
 
     for gpu in gpus:
-        tf.config.experimental.set_memory_growth(gpu, True)
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as exc:
+            print("Could not set GPU memory growth:", exc)
     return gpus
 
 

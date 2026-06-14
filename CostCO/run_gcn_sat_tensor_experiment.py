@@ -3,6 +3,10 @@ import json
 import os
 from pprint import pprint
 
+os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
+os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
 import numpy as np
 from tensorflow import keras as k
 
@@ -247,6 +251,16 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--cpu-only", action="store_true")
+    parser.add_argument(
+        "--fit-shuffle",
+        action="store_true",
+        help="Enable Keras fit shuffle. Default is disabled for reproducibility.",
+    )
+    parser.add_argument(
+        "--disable-early-stopping",
+        action="store_true",
+        help="Train for the full epoch count without EarlyStopping.",
+    )
     parser.add_argument("--metrics-path", default=None)
     return parser.parse_args()
 
@@ -403,6 +417,7 @@ def main():
     print("Output bias init:", output_bias_init)
     print("Metrics scale: original target values")
 
+    configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
     model = create_gcn_costco(
         shape,
         topology,
@@ -440,23 +455,27 @@ def main():
         output_bias_init=output_bias_init,
     )
     compile_gcn_costco(model, lr=args.lr)
+    callbacks = []
+    if not args.disable_early_stopping:
+        callbacks.append(
+            k.callbacks.EarlyStopping(
+                monitor="val_mae",
+                patience=10,
+                restore_best_weights=True,
+            )
+        )
     model.fit(
         x=transform_indices(train_indices),
         y=train_targets,
         verbose=1,
         epochs=args.epochs,
         batch_size=args.batch_size,
+        shuffle=args.fit_shuffle,
         validation_data=(
             transform_indices(val_indices),
             val_targets,
         ),
-        callbacks=[
-            k.callbacks.EarlyStopping(
-                monitor="val_mae",
-                patience=10,
-                restore_best_weights=True,
-            )
-        ],
+        callbacks=callbacks,
     )
 
     results = {
@@ -534,6 +553,8 @@ def main():
             "output_bias_init": output_bias_init,
             "metrics_scale": "original",
             "seed": args.seed,
+            "fit_shuffle": args.fit_shuffle,
+            "disable_early_stopping": args.disable_early_stopping,
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },

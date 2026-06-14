@@ -3,6 +3,10 @@ import json
 import os
 from pprint import pprint
 
+os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
+os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
 import numpy as np
 from tensorflow import keras as k
 
