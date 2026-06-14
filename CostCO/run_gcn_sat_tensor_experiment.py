@@ -225,6 +225,11 @@ def parse_args():
     parser.add_argument("--temporal-delta", type=int, default=2)
     parser.add_argument("--use-mode-text", action="store_true")
     parser.add_argument("--mode-text-dir", default="mode_text_data")
+    parser.add_argument(
+        "--text-fusion-mode",
+        choices=["concat", "dual"],
+        default="concat",
+    )
     parser.add_argument("--text-hidden-dim", type=int, default=64)
     parser.add_argument("--text-align-dim", type=int, default=64)
     parser.add_argument("--text-alpha", type=float, default=0.1)
@@ -422,6 +427,7 @@ def main():
         source_text_numeric_features=source_text_numeric_features,
         destination_text_numeric_features=destination_text_numeric_features,
         time_text_numeric_features=time_text_numeric_features,
+        text_fusion_mode=args.text_fusion_mode,
         text_hidden_dim=args.text_hidden_dim,
         text_align_dim=args.text_align_dim,
         text_alpha=args.text_alpha,
@@ -492,6 +498,7 @@ def main():
             "temporal_delta": args.temporal_delta,
             "use_mode_text": args.use_mode_text,
             "mode_text_dir": args.mode_text_dir,
+            "text_fusion_mode": args.text_fusion_mode,
             "text_embedding_metadata": text_metadata,
             "use_text_numeric_features": source_text_numeric_features is not None,
             "source_text_numeric_shape": (
