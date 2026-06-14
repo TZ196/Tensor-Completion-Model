@@ -38,6 +38,60 @@ TIME_GROUPS = {
 }
 
 
+class ConciseTrainingLogger(k.callbacks.Callback):
+    def __init__(self, log_every=10):
+        super().__init__()
+        self.log_every = max(1, int(log_every))
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        epoch_num = epoch + 1
+        total_epochs = self.params.get("epochs")
+        should_log = (
+            epoch_num == 1 or
+            epoch_num % self.log_every == 0 or
+            epoch_num == total_epochs
+        )
+        if not should_log:
+            return
+        align_total = 0.0
+        for name in (
+            "source_text_align_weighted_loss",
+            "destination_text_align_weighted_loss",
+            "time_text_align_weighted_loss",
+            "source_struct_align_weighted_loss",
+            "destination_struct_align_weighted_loss",
+            "time_struct_align_weighted_loss",
+        ):
+            value = logs.get(name)
+            if value is not None:
+                align_total += float(value)
+        parts = [
+            "epoch %d/%s" % (epoch_num, total_epochs),
+            "loss=%.6f" % float(logs.get("loss", 0.0)),
+            "mae=%.6f" % float(logs.get("mae", 0.0)),
+        ]
+        if "val_loss" in logs:
+            parts.append("val_loss=%.6f" % float(logs["val_loss"]))
+        if "val_mae" in logs:
+            parts.append("val_mae=%.6f" % float(logs["val_mae"]))
+        if align_total > 0.0:
+            parts.append("weighted_align=%.6f" % align_total)
+        print(" - ".join(parts))
+
+
+def default_artifact_path(metrics_path, subdir, suffix):
+    stem = os.path.splitext(os.path.basename(metrics_path))[0]
+    return os.path.join(subdir, stem + suffix)
+
+
+def serializable_history(history):
+    payload = {}
+    for key, values in history.history.items():
+        payload[key] = [float(value) for value in values]
+    return payload
+
+
 def select_feature_indices(group, groups):
     if group == "full":
         return None
@@ -257,10 +311,31 @@ def parse_args():
         help="Enable Keras fit shuffle. Default is disabled for reproducibility.",
     )
     parser.add_argument(
+        "--fit-verbose",
+        type=int,
+        choices=[0, 1, 2],
+        default=0,
+        help="Keras fit verbosity. Default 0 uses the concise logger.",
+    )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=10,
+        help="Epoch interval for concise logging when --fit-verbose is 0.",
+    )
+    parser.add_argument(
         "--disable-early-stopping",
         action="store_true",
         help="Train for the full epoch count without EarlyStopping.",
     )
+    parser.add_argument(
+        "--save-run-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save best weights and training history for reproducible reruns.",
+    )
+    parser.add_argument("--checkpoint-path", default=None)
+    parser.add_argument("--history-path", default=None)
     parser.add_argument("--metrics-path", default=None)
     return parser.parse_args()
 
@@ -295,6 +370,18 @@ def main():
             args.nc,
             args.target_normalization,
             model_name="gcn_costco",
+        )
+    if args.checkpoint_path is None:
+        args.checkpoint_path = default_artifact_path(
+            args.metrics_path,
+            "checkpoints",
+            ".best.weights.h5",
+        )
+    if args.history_path is None:
+        args.history_path = default_artifact_path(
+            args.metrics_path,
+            "histories",
+            ".history.json",
         )
 
     configure_tensorflow(cpu_only=args.cpu_only, seed=args.seed)
@@ -456,6 +543,22 @@ def main():
     )
     compile_gcn_costco(model, lr=args.lr)
     callbacks = []
+    if args.fit_verbose == 0:
+        callbacks.append(ConciseTrainingLogger(log_every=args.log_every))
+    if args.save_run_artifacts:
+        checkpoint_dir = os.path.dirname(args.checkpoint_path)
+        if checkpoint_dir and not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir)
+        callbacks.append(
+            k.callbacks.ModelCheckpoint(
+                filepath=args.checkpoint_path,
+                monitor="val_mae",
+                save_best_only=True,
+                save_weights_only=True,
+                mode="min",
+                verbose=0,
+            )
+        )
     if not args.disable_early_stopping:
         callbacks.append(
             k.callbacks.EarlyStopping(
@@ -464,10 +567,10 @@ def main():
                 restore_best_weights=True,
             )
         )
-    model.fit(
+    history = model.fit(
         x=transform_indices(train_indices),
         y=train_targets,
-        verbose=1,
+        verbose=args.fit_verbose,
         epochs=args.epochs,
         batch_size=args.batch_size,
         shuffle=args.fit_shuffle,
@@ -477,6 +580,21 @@ def main():
         ),
         callbacks=callbacks,
     )
+    if args.save_run_artifacts:
+        history_dir = os.path.dirname(args.history_path)
+        if history_dir and not os.path.exists(history_dir):
+            os.makedirs(history_dir)
+        history_payload = {
+            "config": {
+                "seed": args.seed,
+                "fit_shuffle": args.fit_shuffle,
+                "disable_early_stopping": args.disable_early_stopping,
+                "checkpoint_path": args.checkpoint_path,
+            },
+            "history": serializable_history(history),
+        }
+        with open(args.history_path, "w") as f:
+            json.dump(history_payload, f, indent=2, sort_keys=True)
 
     results = {
         "config": {
@@ -554,7 +672,12 @@ def main():
             "metrics_scale": "original",
             "seed": args.seed,
             "fit_shuffle": args.fit_shuffle,
+            "fit_verbose": args.fit_verbose,
+            "log_every": args.log_every,
             "disable_early_stopping": args.disable_early_stopping,
+            "save_run_artifacts": args.save_run_artifacts,
+            "checkpoint_path": args.checkpoint_path,
+            "history_path": args.history_path,
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },
