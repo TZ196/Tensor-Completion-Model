@@ -898,6 +898,99 @@ class ModeWiseTextLayer(k.layers.Layer):
         return config
 
 
+class ODPathFeatureLayer(k.layers.Layer):
+    """Inject OD-specific path features into the fused prediction state."""
+
+    def __init__(self, od_path_features, hidden_dim=64, alpha_init=0.05,
+                 **kwargs):
+        super().__init__(**kwargs)
+        features = np.asarray(od_path_features, dtype="float32")
+        if features.ndim != 4:
+            raise ValueError(
+                "od_path_features must have shape [time, source, destination, dim]"
+            )
+        if features.shape[1] != features.shape[2]:
+            raise ValueError("OD path features must use a square node dimension")
+        if not np.all(np.isfinite(features)):
+            raise ValueError("OD path features contain NaN or Inf values")
+        self.od_path_features = tf.constant(features, dtype=tf.float32)
+        self.time_len = int(features.shape[0])
+        self.node_count = int(features.shape[1])
+        self.feature_dim = int(features.shape[3])
+        self.hidden_dim = int(hidden_dim)
+        self.alpha_init = float(alpha_init)
+
+        self.feature_proj_1 = k.layers.Dense(hidden_dim)
+        self.feature_proj_norm_1 = k.layers.LayerNormalization()
+        self.feature_proj_act = k.layers.Activation("gelu")
+        self.feature_proj_norm_2 = k.layers.LayerNormalization()
+        self.gate = None
+        self.fuse_norm = k.layers.LayerNormalization()
+
+    def build(self, input_shape):
+        fused_dim = int(input_shape[0][-1])
+        self.feature_proj_2 = k.layers.Dense(fused_dim)
+        self.gate = k.layers.Dense(fused_dim, activation="sigmoid")
+
+        value = np.clip(self.alpha_init / 0.2, 1e-4, 1.0 - 1e-4)
+        initializer = k.initializers.Constant(
+            float(np.log(value / (1.0 - value)))
+        )
+        self.alpha_logit = self.add_weight(
+            name="od_path_alpha_logit",
+            shape=(),
+            initializer=initializer,
+            trainable=True,
+        )
+        super().build(input_shape)
+
+    def _project_features(self, features):
+        x = self.feature_proj_1(features)
+        x = self.feature_proj_norm_1(x)
+        x = self.feature_proj_act(x)
+        x = self.feature_proj_2(x)
+        return self.feature_proj_norm_2(x)
+
+    def call(self, inputs):
+        fused, src_input, dst_input, time_input = inputs
+        src = tf.cast(tf.reshape(src_input, [-1]), tf.int32)
+        dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
+        time_raw = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
+        time = tf.clip_by_value(time_raw, 0, self.time_len - 1)
+
+        clipped = tf.not_equal(time_raw, time)
+        self.add_metric(
+            tf.reduce_mean(tf.cast(clipped, tf.float32)),
+            name="od_path_time_clipped_ratio",
+            aggregation="mean",
+        )
+
+        features_t = tf.gather(self.od_path_features, time)
+        batch_ids = tf.range(tf.shape(time)[0], dtype=tf.int32)
+        path_features = tf.gather_nd(
+            features_t,
+            tf.stack([batch_ids, src, dst], axis=1),
+        )
+        path_x = self._project_features(path_features)
+        alpha = 0.2 * tf.sigmoid(self.alpha_logit)
+        gate = self.gate(tf.concat([fused, path_x], axis=-1))
+        out = self.fuse_norm(fused + alpha * gate * path_x)
+
+        self.add_metric(alpha, name="od_path_alpha", aggregation="mean")
+        return out
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "time_len": self.time_len,
+            "node_count": self.node_count,
+            "feature_dim": self.feature_dim,
+            "hidden_dim": self.hidden_dim,
+            "alpha_init": self.alpha_init,
+        })
+        return config
+
+
 class TemporalGCNPairLayer(k.layers.Layer):
     """Encode source/destination nodes with A_t selected by time index."""
 
@@ -1011,6 +1104,8 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       text_hidden_dim=64, text_align_dim=64,
                       text_alpha=0.1, text_align_target_ratio=0.0,
                       text_target_start=0,
+                      od_path_features=None, od_path_hidden_dim=64,
+                      od_path_alpha_init=0.05,
                       output_bias_init=0.0):
     """Create CoSTCo with a trainable temporal GCN topology branch.
 
@@ -1148,6 +1243,13 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
         activation="relu",
         name="fusion_dense_2",
     )(fused)
+    if od_path_features is not None:
+        fused = ODPathFeatureLayer(
+            od_path_features=od_path_features,
+            hidden_dim=od_path_hidden_dim,
+            alpha_init=od_path_alpha_init,
+            name="od_path_feature_fusion",
+        )([fused, inputs[0], inputs[1], inputs[2]])
     output = k.layers.Dense(
         1,
         activation=None,

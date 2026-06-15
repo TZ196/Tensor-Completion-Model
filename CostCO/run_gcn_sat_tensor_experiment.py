@@ -189,6 +189,51 @@ def feature_quality_report(node_features, time_features, node_names, time_names)
     }
 
 
+def od_path_feature_quality_report(features, feature_names):
+    flat = features.reshape(-1, features.shape[-1])
+    std = flat.std(axis=0)
+    return {
+        "finite": bool(np.isfinite(features).all()),
+        "feature_std": std.astype("float64").tolist(),
+        "near_constant_features": [
+            feature_names[idx] for idx, value in enumerate(std)
+            if value < 1e-6
+        ],
+    }
+
+
+def load_od_path_features(path, traffic_shape):
+    data = np.load(path, allow_pickle=True)
+    if "od_path_features" not in data:
+        raise KeyError(
+            "OD path feature file must contain 'od_path_features'. "
+            "Available keys: %s" % list(data.keys())
+        )
+    features = data["od_path_features"].astype("float32")
+    if features.ndim != 4:
+        raise ValueError("od_path_features must have shape [time, source, destination, dim]")
+    expected = (traffic_shape[2], traffic_shape[0], traffic_shape[1])
+    if features.shape[:3] != expected:
+        raise ValueError(
+            "OD path feature prefix shape %s does not match expected %s" %
+            (features.shape[:3], expected)
+        )
+    if "od_path_feature_names" in data:
+        feature_names = data["od_path_feature_names"].astype(str).tolist()
+    else:
+        feature_names = [
+            "od_path_feature_%d" % idx for idx in range(features.shape[-1])
+        ]
+    quality = od_path_feature_quality_report(features, feature_names)
+    if not quality["finite"]:
+        raise ValueError("OD path features contain NaN or Inf values")
+    metadata = {}
+    for key in ("normalization_mean", "normalization_std"):
+        if key in data:
+            metadata[key] = data[key].astype("float64").tolist()
+    return features, feature_names, quality, metadata
+
+
 def load_mode_struct_features(path, group, seed, shuffle_features=False):
     if group == "none":
         return None, None, [], [], {}
@@ -356,6 +401,13 @@ def parse_args():
     parser.add_argument("--time-align-weight", type=float, default=0.0)
     parser.add_argument("--alignment-temperature", type=float, default=0.2)
     parser.add_argument("--temporal-delta", type=int, default=2)
+    parser.add_argument("--use-od-path-features", action="store_true")
+    parser.add_argument(
+        "--od-path-feature-path",
+        default="mode_od_path_features.npz",
+    )
+    parser.add_argument("--od-path-hidden-dim", type=int, default=64)
+    parser.add_argument("--od-path-alpha-init", type=float, default=0.05)
     parser.add_argument("--use-mode-text", action="store_true")
     parser.add_argument("--mode-text-dir", default="mode_text_data")
     parser.add_argument(
@@ -563,6 +615,28 @@ def main():
     else:
         print("Mode structural features: disabled")
 
+    od_path_features = None
+    od_path_feature_names = []
+    od_path_feature_quality = {}
+    od_path_feature_metadata = {}
+    if args.use_od_path_features:
+        (
+            od_path_features,
+            od_path_feature_names,
+            od_path_feature_quality,
+            od_path_feature_metadata,
+        ) = load_od_path_features(args.od_path_feature_path, shape)
+        print("OD path features:", od_path_features.shape)
+        print("OD path feature names:", od_path_feature_names)
+        print("OD path feature std:", od_path_feature_quality["feature_std"])
+        if od_path_feature_quality["near_constant_features"]:
+            print(
+                "Near-constant OD path features:",
+                od_path_feature_quality["near_constant_features"],
+            )
+    else:
+        print("OD path features: disabled")
+
     source_text_embeddings = None
     destination_text_embeddings = None
     time_text_embeddings = None
@@ -644,6 +718,9 @@ def main():
         text_alpha=args.text_alpha,
         text_align_target_ratio=args.text_align_target_ratio,
         text_target_start=text_target_start,
+        od_path_features=od_path_features,
+        od_path_hidden_dim=args.od_path_hidden_dim,
+        od_path_alpha_init=args.od_path_alpha_init,
         output_bias_init=output_bias_init,
     )
     compile_gcn_costco(model, lr=args.lr)
@@ -749,6 +826,17 @@ def main():
             "time_align_weight": args.time_align_weight,
             "alignment_temperature": args.alignment_temperature,
             "temporal_delta": args.temporal_delta,
+            "use_od_path_features": args.use_od_path_features,
+            "od_path_feature_path": args.od_path_feature_path,
+            "od_path_feature_shape": (
+                None if od_path_features is None else
+                [int(v) for v in od_path_features.shape]
+            ),
+            "od_path_feature_names": od_path_feature_names,
+            "od_path_feature_quality": od_path_feature_quality,
+            "od_path_feature_metadata": od_path_feature_metadata,
+            "od_path_hidden_dim": args.od_path_hidden_dim,
+            "od_path_alpha_init": args.od_path_alpha_init,
             "use_mode_text": args.use_mode_text,
             "mode_text_dir": args.mode_text_dir,
             "text_fusion_mode": args.text_fusion_mode,
