@@ -186,9 +186,25 @@ def main():
         "time_text_numeric_features.npy",
         required=False,
     )
+    metadata_path = os.path.join(args.mode_text_dir, "text_embedding_metadata.json")
+    metadata = {}
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+    static_source_destination = (
+        metadata.get("source_destination_text_granularity") ==
+        "static_node_repeated_by_time"
+    )
 
     report = {
         "mode_text_dir": args.mode_text_dir,
+        "metadata": {
+            "text_generation": metadata.get("text_generation"),
+            "source_destination_text_granularity": metadata.get(
+                "source_destination_text_granularity"
+            ),
+            "time_text_granularity": metadata.get("time_text_granularity"),
+        },
         "source_variance": variance_report(source),
         "destination_variance": variance_report(destination),
         "time_variance": variance_report(time),
@@ -223,7 +239,10 @@ def main():
     for name in ("source_variance", "destination_variance", "time_variance"):
         if report[name]["near_collapse"]:
             warnings.append("%s: embedding variance may be collapsed" % name)
-    for name in ("source_temporal", "destination_temporal", "time_temporal"):
+    temporal_names = ["time_temporal"]
+    if not static_source_destination:
+        temporal_names.extend(["source_temporal", "destination_temporal"])
+    for name in temporal_names:
         if report[name]["low_temporal_variation"]:
             warnings.append("%s: temporal variation is very low" % name)
     if report["source_destination_asymmetry"]["nearly_identical"]:

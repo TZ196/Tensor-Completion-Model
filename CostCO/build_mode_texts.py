@@ -85,6 +85,35 @@ def change_label(value):
     return "actively changing"
 
 
+def zscore_label(value, low=-0.75, high=0.75,
+                 labels=("below average", "near average", "above average")):
+    if value <= low:
+        return labels[0]
+    if value >= high:
+        return labels[2]
+    return labels[1]
+
+
+def topology_change_phase(z_value):
+    if z_value <= -0.75:
+        return "stable coverage phase"
+    if z_value >= 1.25:
+        return "highly volatile handoff phase"
+    if z_value >= 0.75:
+        return "active handoff phase"
+    return "transitioning coverage phase"
+
+
+def orbit_phase_label(phase):
+    if phase < 0.25:
+        return "early orbit phase"
+    if phase < 0.50:
+        return "mid-ascending orbit phase"
+    if phase < 0.75:
+        return "late orbit phase"
+    return "wraparound orbit phase"
+
+
 def zscore(value, values):
     values = np.asarray(values, dtype="float32")
     return float((value - np.mean(values)) / max(np.std(values), EPS))
@@ -229,55 +258,6 @@ def node_topology_roles(topology, planes):
     }
 
 
-def topology_role(node, time_idx, topo_stats, central_low, central_high,
-                  bottleneck_high):
-    central = topo_stats["closeness"][time_idx, node]
-    bottleneck = topo_stats["bottleneck_exposure"][time_idx, node]
-    changing = topo_stats["neighbor_change"][time_idx, node]
-    if central >= central_high:
-        central_text = "central"
-    elif central <= central_low:
-        central_text = "peripheral"
-    else:
-        central_text = "moderately central"
-    if bottleneck >= bottleneck_high:
-        bottleneck_text = "with high bottleneck exposure"
-    elif bottleneck > 0.0:
-        bottleneck_text = "with moderate bottleneck exposure"
-    else:
-        bottleneck_text = "with low bottleneck exposure"
-    if changing >= 0.20:
-        change_text = "actively changing"
-    elif changing >= 0.05:
-        change_text = "mildly changing"
-    else:
-        change_text = "stable"
-    return "%s and %s, %s" % (central_text, change_text, bottleneck_text)
-
-
-def path_bottleneck_state(time_idx, topo_stats, path_low, path_high,
-                          bottle_high, cross_high):
-    path_len = topo_stats["time_path_mean"][time_idx]
-    bottleneck = topo_stats["time_bottleneck_concentration"][time_idx]
-    cross = topo_stats["time_cross_plane_pressure"][time_idx]
-    if path_len <= path_low:
-        path_text = "short paths"
-    elif path_len >= path_high:
-        path_text = "long paths"
-    else:
-        path_text = "moderate path length"
-    if bottleneck >= bottle_high:
-        bottle_text = "concentrated bottlenecks"
-    else:
-        bottle_text = "low bottleneck pressure"
-    if cross >= cross_high:
-        return "%s with high cross-plane pressure and %s" % (
-            path_text,
-            bottle_text,
-        )
-    return "%s with %s" % (path_text, bottle_text)
-
-
 def build_records(tensor, topology, history_len=30, target_start=0,
                   target_end=None, planes=10):
     source_count, destination_count, time_len = tensor.shape
@@ -331,15 +311,8 @@ def build_records(tensor, topology, history_len=30, target_start=0,
     cross_out_q = np.quantile(cross_out, [0.33, 0.66])
     cross_in_q = np.quantile(cross_in, [0.33, 0.66])
 
-    central_vals = topo_stats["closeness"].reshape(-1)
-    central_q = np.quantile(central_vals, [0.33, 0.66])
-    bottleneck_high = np.quantile(
-        topo_stats["bottleneck_exposure"].reshape(-1),
-        0.66,
-    )
     path_q = np.quantile(topo_stats["time_path_mean"], [0.33, 0.66])
     path_p90_q = np.quantile(topo_stats["time_path_p90"], [0.33, 0.66])
-    edge_density_q = np.quantile(topo_stats["time_edge_density"], [0.33, 0.66])
     inter_edge_q = np.quantile(
         topo_stats["time_inter_plane_edge_ratio"],
         [0.33, 0.66],
@@ -358,16 +331,31 @@ def build_records(tensor, topology, history_len=30, target_start=0,
     time_records = []
 
     for time_idx in target_times:
+        change_z = zscore(topo_stats["time_change"][time_idx],
+                          topo_stats["time_change"])
+        path_mean_z = zscore(topo_stats["time_path_mean"][time_idx],
+                             topo_stats["time_path_mean"])
+        bottleneck_z = zscore(
+            topo_stats["time_bottleneck_concentration"][time_idx],
+            topo_stats["time_bottleneck_concentration"],
+        )
+        cross_plane_z = zscore(
+            topo_stats["time_cross_plane_pressure"][time_idx],
+            topo_stats["time_cross_plane_pressure"],
+        )
+        orbit_phase_ratio = (
+            (time_idx - target_start) /
+            max(float(max(target_end - target_start, 1)), 1.0)
+        )
         time_state = {
             "time_index": time_idx,
-            "edge_density_level": level_by_quantiles(
-                topo_stats["time_edge_density"][time_idx],
-                edge_density_q[0],
-                edge_density_q[1],
-                labels=("sparse", "moderate", "dense"),
-            ),
-            "edge_density": float(topo_stats["time_edge_density"][time_idx]),
             "average_degree": float(topo_stats["time_average_degree"][time_idx]),
+            "average_degree_level": level_by_quantiles(
+                topo_stats["time_average_degree"][time_idx],
+                np.quantile(topo_stats["time_average_degree"], 0.33),
+                np.quantile(topo_stats["time_average_degree"], 0.66),
+                labels=("low-degree", "moderate-degree", "high-degree"),
+            ),
             "inter_plane_edge_level": level_by_quantiles(
                 topo_stats["time_inter_plane_edge_ratio"][time_idx],
                 inter_edge_q[0],
@@ -388,10 +376,9 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                 topo_stats["time_change"][time_idx]
             ),
             "topology_change_rate": float(topo_stats["time_change"][time_idx]),
-            "topology_change_zscore": zscore(
-                topo_stats["time_change"][time_idx],
-                topo_stats["time_change"],
-            ),
+            "topology_change_zscore": change_z,
+            "topology_change_relative": zscore_label(change_z),
+            "handoff_phase": topology_change_phase(change_z),
             "path_length_level": level_by_quantiles(
                 topo_stats["time_path_mean"][time_idx],
                 path_q[0],
@@ -399,10 +386,8 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                 labels=("short", "moderate", "long"),
             ),
             "mean_shortest_path_hops": float(topo_stats["time_path_mean"][time_idx]),
-            "mean_shortest_path_zscore": zscore(
-                topo_stats["time_path_mean"][time_idx],
-                topo_stats["time_path_mean"],
-            ),
+            "mean_shortest_path_zscore": path_mean_z,
+            "path_length_relative": zscore_label(path_mean_z),
             "p90_path_level": level_by_quantiles(
                 topo_stats["time_path_p90"][time_idx],
                 path_p90_q[0],
@@ -419,10 +404,8 @@ def build_records(tensor, topology, history_len=30, target_start=0,
             "bottleneck_concentration": float(
                 topo_stats["time_bottleneck_concentration"][time_idx]
             ),
-            "bottleneck_zscore": zscore(
-                topo_stats["time_bottleneck_concentration"][time_idx],
-                topo_stats["time_bottleneck_concentration"],
-            ),
+            "bottleneck_zscore": bottleneck_z,
+            "bottleneck_relative": zscore_label(bottleneck_z),
             "cross_plane_pressure_level": level_by_quantiles(
                 topo_stats["time_cross_plane_pressure"][time_idx],
                 cross_path_q[0],
@@ -432,19 +415,23 @@ def build_records(tensor, topology, history_len=30, target_start=0,
             "cross_plane_path_pressure": float(
                 topo_stats["time_cross_plane_pressure"][time_idx]
             ),
-            "cross_plane_path_pressure_zscore": zscore(
-                topo_stats["time_cross_plane_pressure"][time_idx],
-                topo_stats["time_cross_plane_pressure"],
-            ),
+            "cross_plane_path_pressure_zscore": cross_plane_z,
+            "cross_plane_pressure_relative": zscore_label(cross_plane_z),
+            "orbit_phase_ratio": float(orbit_phase_ratio),
+            "orbit_phase_label": orbit_phase_label(orbit_phase_ratio),
         }
         time_state["text"] = (
-            "At this time slice, the current topology is {edge_density_level} "
-            "with {reachable_od_level} OD reachability. Inter-plane "
-            "connectivity is {inter_plane_edge_level}. The topology is "
-            "{topology_change_state}. Routing has {path_length_level} paths "
-            "and a {p90_path_level} p90 path length. Bottlenecks are "
-            "{bottleneck_level}, and cross-plane path pressure is "
-            "{cross_plane_pressure_level}."
+            "The satellite network is in a {average_degree_level}, "
+            "{handoff_phase}. Inter-plane connectivity is "
+            "{inter_plane_edge_level}, and OD reachability is "
+            "{reachable_od_level}. Topology change is "
+            "{topology_change_relative} for this slice. Routing paths are "
+            "{path_length_level} with a {p90_path_level} tail profile, and "
+            "the path length is {path_length_relative}. Potential structural "
+            "bottlenecks are {bottleneck_level} and {bottleneck_relative}. "
+            "Cross-plane shortest-path pressure is {cross_plane_pressure_level} "
+            "and {cross_plane_pressure_relative}. The slice is in the "
+            "{orbit_phase_label}."
         ).format(**time_state)
         time_records.append(time_state)
 
@@ -476,14 +463,6 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                     labels=("low", "moderate", "high"),
                 ),
                 "cross_plane_out_ratio": float(cross_out[sat]),
-                "source_topology_role": topology_role(
-                    sat,
-                    time_idx,
-                    topo_stats,
-                    central_q[0],
-                    central_q[1],
-                    bottleneck_high,
-                ),
                 "source_closeness": float(topo_stats["closeness"][time_idx, sat]),
                 "source_bottleneck_exposure": float(
                     topo_stats["bottleneck_exposure"][time_idx, sat]
@@ -497,8 +476,9 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                 "load and a {peak_out_level} peak load. Its outbound traffic "
                 "trend is {out_trend}. Its destination distribution is "
                 "{destination_diversity}, with a {cross_plane_out_level} "
-                "cross-plane sending tendency. Under the current topology, "
-                "its source-side structural role is {source_topology_role}."
+                "cross-plane sending tendency. As a source, it mainly "
+                "represents a historical sender role rather than a current "
+                "topology state."
             ).format(**record)
             source_records.append(record)
 
@@ -529,14 +509,6 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                     labels=("low", "moderate", "high"),
                 ),
                 "cross_plane_in_ratio": float(cross_in[sat]),
-                "destination_topology_role": topology_role(
-                    sat,
-                    time_idx,
-                    topo_stats,
-                    central_q[0],
-                    central_q[1],
-                    bottleneck_high,
-                ),
                 "destination_closeness": float(
                     topo_stats["closeness"][time_idx, sat]
                 ),
@@ -552,9 +524,9 @@ def build_records(tensor, topology, history_len=30, target_start=0,
                 "load and a {peak_in_level} peak load. Its inbound traffic "
                 "trend is {in_trend}. Its source distribution is "
                 "{source_diversity}, with a {cross_plane_in_level} "
-                "cross-plane receiving tendency. Under the current topology, "
-                "its destination-side structural role is "
-                "{destination_topology_role}."
+                "cross-plane receiving tendency. As a destination, it mainly "
+                "represents a historical receiver role rather than a current "
+                "topology state."
             ).format(**dest_record)
             destination_records.append(dest_record)
 
@@ -565,7 +537,11 @@ def build_records(tensor, topology, history_len=30, target_start=0,
         "target_times": target_times,
         "node_count": source_count,
         "planes": planes,
-        "text_generation": "deterministic_template_with_numeric_side_channel",
+        "text_generation": (
+            "static_source_destination_text_dynamic_time_text_with_numeric_side_channel"
+        ),
+        "source_destination_text_granularity": "static_node_repeated_by_time",
+        "time_text_granularity": "dynamic_time_slice",
     }
     return source_records, destination_records, time_records, metadata
 

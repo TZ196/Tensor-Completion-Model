@@ -11,9 +11,6 @@ SOURCE_NUMERIC_FIELDS = [
     "out_trend_ratio",
     "destination_entropy",
     "cross_plane_out_ratio",
-    "source_closeness",
-    "source_bottleneck_exposure",
-    "source_neighbor_change",
 ]
 
 DESTINATION_NUMERIC_FIELDS = [
@@ -22,25 +19,18 @@ DESTINATION_NUMERIC_FIELDS = [
     "in_trend_ratio",
     "source_entropy",
     "cross_plane_in_ratio",
-    "destination_closeness",
-    "destination_bottleneck_exposure",
-    "destination_neighbor_change",
 ]
 
 TIME_NUMERIC_FIELDS = [
-    "edge_density",
     "average_degree",
     "inter_plane_edge_ratio",
-    "reachable_od_ratio",
     "topology_change_rate",
     "topology_change_zscore",
     "mean_shortest_path_hops",
-    "mean_shortest_path_zscore",
     "p90_shortest_path_hops",
     "bottleneck_concentration",
-    "bottleneck_zscore",
     "cross_plane_path_pressure",
-    "cross_plane_path_pressure_zscore",
+    "orbit_phase_ratio",
 ]
 
 
@@ -163,7 +153,15 @@ def extract_numeric_features(records, field_names, expected_kind):
     values = np.asarray(rows, dtype="float32")
     if not np.all(np.isfinite(values)):
         raise ValueError("%s numeric features contain NaN or Inf" % expected_kind)
-    return normalize_numeric_features(values)
+    raw_std = values.std(axis=0)
+    keep = raw_std >= 1e-6
+    kept_fields = [name for name, use in zip(field_names, keep) if use]
+    dropped_fields = [name for name, use in zip(field_names, keep) if not use]
+    if not kept_fields:
+        raise ValueError("%s numeric features are all near-constant" % expected_kind)
+    values = values[:, keep]
+    normalized, mean, std = normalize_numeric_features(values)
+    return normalized, mean, std, kept_fields, dropped_fields
 
 
 def parse_args():
@@ -207,17 +205,35 @@ def main():
     destination_texts = [record["text"] for record in destination_records]
     time_texts = [record["text"] for record in time_records]
 
-    source_numeric, source_numeric_mean, source_numeric_std = (
+    (
+        source_numeric,
+        source_numeric_mean,
+        source_numeric_std,
+        source_numeric_fields,
+        source_dropped_numeric_fields,
+    ) = (
         extract_numeric_features(source_records, SOURCE_NUMERIC_FIELDS, "source")
     )
-    destination_numeric, destination_numeric_mean, destination_numeric_std = (
+    (
+        destination_numeric,
+        destination_numeric_mean,
+        destination_numeric_std,
+        destination_numeric_fields,
+        destination_dropped_numeric_fields,
+    ) = (
         extract_numeric_features(
             destination_records,
             DESTINATION_NUMERIC_FIELDS,
             "destination",
         )
     )
-    time_numeric, time_numeric_mean, time_numeric_std = (
+    (
+        time_numeric,
+        time_numeric_mean,
+        time_numeric_std,
+        time_numeric_fields,
+        time_dropped_numeric_fields,
+    ) = (
         extract_numeric_features(time_records, TIME_NUMERIC_FIELDS, "time")
     )
 
@@ -252,12 +268,12 @@ def main():
     source_numeric = source_numeric.reshape(
         target_count,
         node_count,
-        len(SOURCE_NUMERIC_FIELDS),
+        len(source_numeric_fields),
     )
     destination_numeric = destination_numeric.reshape(
         target_count,
         node_count,
-        len(DESTINATION_NUMERIC_FIELDS),
+        len(destination_numeric_fields),
     )
     if destination_embeddings.shape[-1] != dim or time_embeddings.shape[-1] != dim:
         raise ValueError("source/destination/time embedding dimensions differ")
@@ -286,9 +302,12 @@ def main():
             "model_path": args.model_path,
             "normalize": normalize,
             "numeric_side_channel": True,
-            "source_numeric_fields": SOURCE_NUMERIC_FIELDS,
-            "destination_numeric_fields": DESTINATION_NUMERIC_FIELDS,
-            "time_numeric_fields": TIME_NUMERIC_FIELDS,
+            "source_numeric_fields": source_numeric_fields,
+            "destination_numeric_fields": destination_numeric_fields,
+            "time_numeric_fields": time_numeric_fields,
+            "source_dropped_numeric_fields": source_dropped_numeric_fields,
+            "destination_dropped_numeric_fields": destination_dropped_numeric_fields,
+            "time_dropped_numeric_fields": time_dropped_numeric_fields,
             "source_numeric_mean": source_numeric_mean.astype(float).tolist(),
             "source_numeric_std": source_numeric_std.astype(float).tolist(),
             "destination_numeric_mean": (
