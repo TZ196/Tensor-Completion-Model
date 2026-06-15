@@ -116,13 +116,11 @@ ensure_text_embeddings
 
 run_step "text_ablation_T0_gcn_baseline_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  --struct-feature-group none \
   "${base_args[@]}" \
   --metrics-path "results/text_ablation_T0_gcn_baseline_seed${SEED}.json"
 
 run_step "text_ablation_T1_text_no_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  --struct-feature-group none \
   "${text_args[@]}" \
   --text-fusion-mode concat \
   "${base_args[@]}" \
@@ -130,7 +128,6 @@ run_step "text_ablation_T1_text_no_align_seed${SEED}" \
 
 run_step "text_ablation_T2_text_align_001_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  --struct-feature-group none \
   "${text_args[@]}" \
   --text-fusion-mode concat \
   --text-align-target-ratio 0.01 \
@@ -141,7 +138,6 @@ run_step "text_ablation_T2_text_align_001_seed${SEED}" \
 
 run_step "text_ablation_T3_text_align_002_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  --struct-feature-group none \
   "${text_args[@]}" \
   --text-fusion-mode concat \
   --text-align-target-ratio 0.02 \
@@ -152,7 +148,6 @@ run_step "text_ablation_T3_text_align_002_seed${SEED}" \
 
 run_step "text_ablation_T4_gated_numeric_no_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  --struct-feature-group none \
   "${text_args[@]}" \
   --text-fusion-mode gated_numeric \
   "${base_args[@]}" \
@@ -160,7 +155,6 @@ run_step "text_ablation_T4_gated_numeric_no_align_seed${SEED}" \
 
 run_step "text_ablation_T5_gated_numeric_align_001_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  --struct-feature-group none \
   "${text_args[@]}" \
   --text-fusion-mode gated_numeric \
   --text-align-target-ratio 0.01 \

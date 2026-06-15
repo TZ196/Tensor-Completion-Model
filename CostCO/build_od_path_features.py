@@ -4,7 +4,7 @@ from collections import deque
 
 import numpy as np
 
-from build_mode_struct_features import (
+from topology_feature_utils import (
     brandes_node_edge_betweenness,
     load_connectivity_tensor,
     make_plane_ids,
@@ -61,11 +61,6 @@ def all_pairs_shortest_paths_with_cross_counts(adj, plane_ids):
         distances.append(dist)
         cross_counts.append(cross_count)
     return np.stack(distances), np.stack(cross_counts)
-
-
-def edge_set(adj):
-    rows, cols = np.where(np.triu(adj, k=1) > 0)
-    return set(zip(rows.tolist(), cols.tolist()))
 
 
 def edge_on_shortest_path(dist, src, dst, edge):

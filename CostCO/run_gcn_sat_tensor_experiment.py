@@ -25,19 +25,6 @@ from run_sat_tensor_experiment import (
 )
 
 
-NODE_GROUPS = {
-    "local": [0, 1, 2, 3],
-    "global": [4, 5, 6, 7],
-    "dynamic_path": [8, 9],
-}
-
-TIME_GROUPS = {
-    "local": [0, 1, 2, 3],
-    "global": [4, 5, 6, 7],
-    "dynamic_path": [8, 9],
-}
-
-
 class ConciseTrainingLogger(k.callbacks.Callback):
     def __init__(self, log_every=10):
         super().__init__()
@@ -55,7 +42,6 @@ class ConciseTrainingLogger(k.callbacks.Callback):
         if not should_log:
             return
         text_align_total = 0.0
-        struct_align_total = 0.0
         for name in (
             "source_text_align_weighted_loss",
             "destination_text_align_weighted_loss",
@@ -64,15 +50,7 @@ class ConciseTrainingLogger(k.callbacks.Callback):
             value = logs.get(name)
             if value is not None:
                 text_align_total += float(value)
-        for name in (
-            "source_struct_align_weighted_loss",
-            "destination_struct_align_weighted_loss",
-            "time_struct_align_weighted_loss",
-        ):
-            value = logs.get(name)
-            if value is not None:
-                struct_align_total += float(value)
-        align_total = text_align_total + struct_align_total
+        align_total = text_align_total
         parts = [
             "epoch %d/%s" % (epoch_num, total_epochs),
             "loss=%.6f" % float(logs.get("loss", 0.0)),
@@ -84,8 +62,6 @@ class ConciseTrainingLogger(k.callbacks.Callback):
             parts.append("val_mae=%.6f" % float(logs["val_mae"]))
         if text_align_total > 0.0:
             parts.append("text_align=%.6f" % text_align_total)
-        if struct_align_total > 0.0:
-            parts.append("struct_align=%.6f" % struct_align_total)
         if align_total > 0.0 and "loss" in logs:
             pred_loss = max(float(logs["loss"]) - align_total, 0.0)
             parts.append("pred_loss~=%.6f" % pred_loss)
@@ -127,9 +103,6 @@ class TextAlignTargetRatioScheduler(k.callbacks.Callback):
             "source_text_align_weighted_loss",
             "destination_text_align_weighted_loss",
             "time_text_align_weighted_loss",
-            "source_struct_align_weighted_loss",
-            "destination_struct_align_weighted_loss",
-            "time_struct_align_weighted_loss",
         )
         weighted_total = sum(
             float(logs.get(name, 0.0)) for name in weighted_names
@@ -157,36 +130,6 @@ def serializable_history(history):
     for key, values in history.history.items():
         payload[key] = [float(value) for value in values]
     return payload
-
-
-def select_feature_indices(group, groups):
-    if group == "full":
-        return None
-    if group in groups:
-        return groups[group]
-    if group == "local_global":
-        return groups["local"] + groups["global"]
-    raise ValueError("Unsupported structural feature group: %s" % group)
-
-
-def feature_quality_report(node_features, time_features, node_names, time_names):
-    node_flat = node_features.reshape(-1, node_features.shape[-1])
-    node_std = node_flat.std(axis=0)
-    time_std = time_features.std(axis=0)
-    return {
-        "node_finite": bool(np.isfinite(node_features).all()),
-        "time_finite": bool(np.isfinite(time_features).all()),
-        "node_std": node_std.astype("float64").tolist(),
-        "time_std": time_std.astype("float64").tolist(),
-        "near_constant_node_features": [
-            node_names[idx] for idx, value in enumerate(node_std)
-            if value < 1e-6
-        ],
-        "near_constant_time_features": [
-            time_names[idx] for idx, value in enumerate(time_std)
-            if value < 1e-6
-        ],
-    }
 
 
 def od_path_feature_quality_report(features, feature_names):
@@ -232,43 +175,6 @@ def load_od_path_features(path, traffic_shape):
         if key in data:
             metadata[key] = data[key].astype("float64").tolist()
     return features, feature_names, quality, metadata
-
-
-def load_mode_struct_features(path, group, seed, shuffle_features=False):
-    if group == "none":
-        return None, None, [], [], {}
-    data = np.load(path, allow_pickle=True)
-    node_features = data["node_features"].astype("float32")
-    time_features = data["time_features"].astype("float32")
-    node_names = data["node_feature_names"].astype(str).tolist()
-    time_names = data["time_feature_names"].astype(str).tolist()
-
-    node_idx = select_feature_indices(group, NODE_GROUPS)
-    time_idx = select_feature_indices(group, TIME_GROUPS)
-    if node_idx is not None:
-        node_features = node_features[:, :, node_idx]
-        node_names = [node_names[idx] for idx in node_idx]
-    if time_idx is not None:
-        time_features = time_features[:, time_idx]
-        time_names = [time_names[idx] for idx in time_idx]
-
-    if shuffle_features:
-        rng = np.random.RandomState(seed)
-        flat = node_features.reshape(-1, node_features.shape[-1])
-        order = rng.permutation(flat.shape[0])
-        node_features = flat[order].reshape(node_features.shape)
-        time_order = rng.permutation(time_features.shape[0])
-        time_features = time_features[time_order]
-
-    quality = feature_quality_report(
-        node_features,
-        time_features,
-        node_names,
-        time_names,
-    )
-    if not quality["node_finite"] or not quality["time_finite"]:
-        raise ValueError("Structural features contain NaN or Inf values")
-    return node_features, time_features, node_names, time_names, quality
 
 
 def load_mode_text_embeddings(text_dir):
@@ -377,28 +283,6 @@ def parse_args():
     parser.add_argument("--nc", type=int, default=64)
     parser.add_argument("--node-dim", type=int, default=32)
     parser.add_argument("--gcn-dim", type=int, default=64)
-    parser.add_argument("--mode-struct-path", default="mode_struct_features.npz")
-    parser.add_argument(
-        "--struct-feature-group",
-        choices=[
-            "none",
-            "local",
-            "global",
-            "dynamic_path",
-            "local_global",
-            "full",
-        ],
-        default="none",
-    )
-    parser.add_argument("--shuffle-struct-features", action="store_true")
-    parser.add_argument("--time-conditioned-modes", action="store_true")
-    parser.add_argument("--structural-hidden-dim", type=int, default=64)
-    parser.add_argument("--structural-align-dim", type=int, default=64)
-    parser.add_argument("--structural-beta", type=float, default=0.1)
-    parser.add_argument("--structural-alpha", type=float, default=0.1)
-    parser.add_argument("--source-align-weight", type=float, default=0.0)
-    parser.add_argument("--destination-align-weight", type=float, default=0.0)
-    parser.add_argument("--time-align-weight", type=float, default=0.0)
     parser.add_argument("--alignment-temperature", type=float, default=0.2)
     parser.add_argument("--temporal-delta", type=int, default=2)
     parser.add_argument("--use-od-path-features", action="store_true")
@@ -490,14 +374,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    alignment_enabled = any(
-        weight > 0.0 for weight in (
-            args.source_align_weight,
-            args.destination_align_weight,
-            args.time_align_weight,
-            args.text_align_target_ratio,
-        )
-    )
+    alignment_enabled = args.text_align_target_ratio > 0.0
     early_stopping_patience = args.early_stopping_patience
     if early_stopping_patience is None:
         early_stopping_patience = 20 if alignment_enabled else 10
@@ -583,37 +460,6 @@ def main():
     topology = load_connectivity_tensor(args.topology_path, shape)
     print("Topology shape:", topology.shape)
     print("Topology branch: temporal GCN")
-    (
-        node_struct_features,
-        time_struct_features,
-        node_feature_names,
-        time_feature_names,
-        struct_feature_quality,
-    ) = load_mode_struct_features(
-        args.mode_struct_path,
-        args.struct_feature_group,
-        args.seed,
-        shuffle_features=args.shuffle_struct_features,
-    )
-    if node_struct_features is not None:
-        print("Mode structural node features:", node_struct_features.shape)
-        print("Mode structural time features:", time_struct_features.shape)
-        print("Node structural feature names:", node_feature_names)
-        print("Time structural feature names:", time_feature_names)
-        print("Node structural feature std:", struct_feature_quality["node_std"])
-        print("Time structural feature std:", struct_feature_quality["time_std"])
-        if struct_feature_quality["near_constant_node_features"]:
-            print(
-                "Near-constant node structural features:",
-                struct_feature_quality["near_constant_node_features"],
-            )
-        if struct_feature_quality["near_constant_time_features"]:
-            print(
-                "Near-constant time structural features:",
-                struct_feature_quality["near_constant_time_features"],
-            )
-    else:
-        print("Mode structural features: disabled")
 
     od_path_features = None
     od_path_feature_names = []
@@ -693,18 +539,8 @@ def main():
         nc=args.nc,
         node_dim=args.node_dim,
         gcn_dim=args.gcn_dim,
-        node_struct_features=node_struct_features,
-        time_struct_features=time_struct_features,
-        structural_hidden_dim=args.structural_hidden_dim,
-        structural_align_dim=args.structural_align_dim,
-        structural_beta=args.structural_beta,
-        structural_alpha=args.structural_alpha,
-        source_align_weight=args.source_align_weight,
-        destination_align_weight=args.destination_align_weight,
-        time_align_weight=args.time_align_weight,
         alignment_temperature=args.alignment_temperature,
         temporal_delta=args.temporal_delta,
-        time_conditioned_modes=args.time_conditioned_modes,
         source_text_embeddings=source_text_embeddings,
         destination_text_embeddings=destination_text_embeddings,
         time_text_embeddings=time_text_embeddings,
@@ -810,20 +646,6 @@ def main():
             "fusion": "costco_kpi_branch_plus_temporal_gcn_branch",
             "topology_input": "sat_connectivity_adjacency",
             "topology_shape": [int(v) for v in topology.shape],
-            "mode_struct_path": args.mode_struct_path,
-            "struct_feature_group": args.struct_feature_group,
-            "shuffle_struct_features": args.shuffle_struct_features,
-            "time_conditioned_modes": args.time_conditioned_modes,
-            "node_struct_feature_names": node_feature_names,
-            "time_struct_feature_names": time_feature_names,
-            "struct_feature_quality": struct_feature_quality,
-            "structural_hidden_dim": args.structural_hidden_dim,
-            "structural_align_dim": args.structural_align_dim,
-            "structural_beta": args.structural_beta,
-            "structural_alpha": args.structural_alpha,
-            "source_align_weight": args.source_align_weight,
-            "destination_align_weight": args.destination_align_weight,
-            "time_align_weight": args.time_align_weight,
             "alignment_temperature": args.alignment_temperature,
             "temporal_delta": args.temporal_delta,
             "use_od_path_features": args.use_od_path_features,

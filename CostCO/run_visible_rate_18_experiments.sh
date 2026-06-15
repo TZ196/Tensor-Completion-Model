@@ -119,7 +119,6 @@ for rate in "${VISIBLE_RATES[@]}"; do
     --tensor-path "$TENSOR_PATH" \
     --topology-path "$TOPOLOGY_PATH" \
     --observed-ratio "$rate" \
-    --struct-feature-group none \
     --rank "$RANK" \
     --nc "$NC" \
     --node-dim "$NODE_DIM" \
@@ -136,7 +135,6 @@ for rate in "${VISIBLE_RATES[@]}"; do
     --tensor-path "$TENSOR_PATH" \
     --topology-path "$TOPOLOGY_PATH" \
     --observed-ratio "$rate" \
-    --struct-feature-group none \
     --use-mode-text \
     --mode-text-dir "$MODE_TEXT_DIR" \
     --text-fusion-mode concat \

@@ -4,7 +4,7 @@ import os
 
 import numpy as np
 
-from build_mode_struct_features import (
+from topology_feature_utils import (
     all_pairs_shortest_paths,
     brandes_node_edge_betweenness,
     edge_set,
