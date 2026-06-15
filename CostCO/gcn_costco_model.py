@@ -340,17 +340,22 @@ class ModeWiseTextLayer(k.layers.Layer):
         source = np.asarray(source_text_embeddings, dtype="float32")
         destination = np.asarray(destination_text_embeddings, dtype="float32")
         time = np.asarray(time_text_embeddings, dtype="float32")
-        if source.ndim != 3:
-            raise ValueError("source_text_embeddings must have shape [time,node,dim]")
-        if destination.ndim != 3:
+        if source.ndim not in (2, 3):
             raise ValueError(
-                "destination_text_embeddings must have shape [time,node,dim]"
+                "source_text_embeddings must have shape [node,dim] "
+                "or [time,node,dim]"
+            )
+        if destination.ndim not in (2, 3):
+            raise ValueError(
+                "destination_text_embeddings must have shape [node,dim] "
+                "or [time,node,dim]"
             )
         if time.ndim != 2:
             raise ValueError("time_text_embeddings must have shape [time,dim]")
         if source.shape != destination.shape:
             raise ValueError("source/destination text embeddings must share shape")
-        if source.shape[0] != time.shape[0]:
+        static_source_destination = source.ndim == 2
+        if not static_source_destination and source.shape[0] != time.shape[0]:
             raise ValueError("source/destination/time text time lengths disagree")
         source_numeric = None
         destination_numeric = None
@@ -372,16 +377,19 @@ class ModeWiseTextLayer(k.layers.Layer):
                 dtype="float32",
             )
             time_numeric = np.asarray(time_text_numeric_features, dtype="float32")
-            if source_numeric.ndim != 3 or source_numeric.shape[:2] != source.shape[:2]:
-                raise ValueError(
-                    "source_text_numeric_features must have shape [time,node,dim]"
-                )
             if (
-                destination_numeric.ndim != 3 or
-                destination_numeric.shape[:2] != destination.shape[:2]
+                source_numeric.ndim != source.ndim or
+                source_numeric.shape[:-1] != source.shape[:-1]
             ):
                 raise ValueError(
-                    "destination_text_numeric_features must have shape [time,node,dim]"
+                    "source_text_numeric_features must match source text prefix shape"
+                )
+            if (
+                destination_numeric.ndim != destination.ndim or
+                destination_numeric.shape[:-1] != destination.shape[:-1]
+            ):
+                raise ValueError(
+                    "destination_text_numeric_features must match destination text prefix shape"
                 )
             if time_numeric.ndim != 2 or time_numeric.shape[0] != time.shape[0]:
                 raise ValueError(
@@ -409,16 +417,17 @@ class ModeWiseTextLayer(k.layers.Layer):
         self.text_fusion_mode = text_fusion_mode
         self.numeric_alpha_init = float(numeric_alpha_init)
         self.alpha_init = float(alpha_init)
+        self.static_source_destination_text = bool(static_source_destination)
         self.text_align_target_ratio = float(text_align_target_ratio)
         self.text_align_enabled = self.text_align_target_ratio > 0.0
         self.initial_text_align_weight = 1e-5 if self.text_align_enabled else 0.0
         self.alignment_temperature = float(alignment_temperature)
         self.temporal_delta = int(temporal_delta)
         self.target_start = int(target_start)
-        self.text_time_len = int(source.shape[0])
-        self.node_count = int(source.shape[1])
-        self.source_text_dim = int(source.shape[2])
-        self.destination_text_dim = int(destination.shape[2])
+        self.text_time_len = int(time.shape[0])
+        self.node_count = int(source.shape[0] if static_source_destination else source.shape[1])
+        self.source_text_dim = int(source.shape[-1])
+        self.destination_text_dim = int(destination.shape[-1])
         self.time_text_dim = int(time.shape[1])
         self.text_dim = self.source_text_dim
         self.source_text_embeddings = tf.constant(source, dtype=tf.float32)
@@ -652,16 +661,18 @@ class ModeWiseTextLayer(k.layers.Layer):
             return
         mode_x, text_x, unique_keys = self._aggregate_by_key(mode_x, text_x, keys)
         unique_count = tf.cast(tf.shape(unique_keys)[0], tf.float32)
-        entity_ids = unique_keys // self.text_time_len
-        entity_times = unique_keys % self.text_time_len
-        same_entity = entity_ids[:, None] == entity_ids[None, :]
-        time_dist = tf.abs(entity_times[:, None] - entity_times[None, :])
-        near_time = time_dist <= self.temporal_delta
-        diagonal = tf.eye(tf.shape(unique_keys)[0], dtype=tf.bool)
-        mask = tf.logical_and(
-            tf.logical_and(same_entity, near_time),
-            tf.logical_not(diagonal),
-        )
+        mask = None
+        if not self.static_source_destination_text:
+            entity_ids = unique_keys // self.text_time_len
+            entity_times = unique_keys % self.text_time_len
+            same_entity = entity_ids[:, None] == entity_ids[None, :]
+            time_dist = tf.abs(entity_times[:, None] - entity_times[None, :])
+            near_time = time_dist <= self.temporal_delta
+            diagonal = tf.eye(tf.shape(unique_keys)[0], dtype=tf.bool)
+            mask = tf.logical_and(
+                tf.logical_and(same_entity, near_time),
+                tf.logical_not(diagonal),
+            )
         loss = self._masked_infonce(mode_proj(mode_x), text_proj(text_x), mask=mask)
         self.add_loss(weight * loss)
         self.add_metric(
@@ -723,35 +734,49 @@ class ModeWiseTextLayer(k.layers.Layer):
             aggregation="mean",
         )
 
-        source_text_t = tf.gather(self.source_text_embeddings, text_time)
-        source_text_raw = tf.gather_nd(
-            source_text_t,
-            tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), src], axis=1),
-        )
-        destination_text_t = tf.gather(self.destination_text_embeddings, text_time)
-        destination_text_raw = tf.gather_nd(
-            destination_text_t,
-            tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), dst], axis=1),
-        )
+        if self.static_source_destination_text:
+            source_text_raw = tf.gather(self.source_text_embeddings, src)
+            destination_text_raw = tf.gather(self.destination_text_embeddings, dst)
+        else:
+            source_text_t = tf.gather(self.source_text_embeddings, text_time)
+            source_text_raw = tf.gather_nd(
+                source_text_t,
+                tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), src], axis=1),
+            )
+            destination_text_t = tf.gather(self.destination_text_embeddings, text_time)
+            destination_text_raw = tf.gather_nd(
+                destination_text_t,
+                tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), dst], axis=1),
+            )
         time_text_raw = tf.gather(self.time_text_embeddings, text_time)
 
         if self.text_fusion_mode == "gated_numeric":
-            source_numeric_t = tf.gather(
-                self.source_text_numeric_features,
-                text_time,
-            )
-            source_numeric_raw = tf.gather_nd(
-                source_numeric_t,
-                tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), src], axis=1),
-            )
-            destination_numeric_t = tf.gather(
-                self.destination_text_numeric_features,
-                text_time,
-            )
-            destination_numeric_raw = tf.gather_nd(
-                destination_numeric_t,
-                tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), dst], axis=1),
-            )
+            if self.static_source_destination_text:
+                source_numeric_raw = tf.gather(
+                    self.source_text_numeric_features,
+                    src,
+                )
+                destination_numeric_raw = tf.gather(
+                    self.destination_text_numeric_features,
+                    dst,
+                )
+            else:
+                source_numeric_t = tf.gather(
+                    self.source_text_numeric_features,
+                    text_time,
+                )
+                source_numeric_raw = tf.gather_nd(
+                    source_numeric_t,
+                    tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), src], axis=1),
+                )
+                destination_numeric_t = tf.gather(
+                    self.destination_text_numeric_features,
+                    text_time,
+                )
+                destination_numeric_raw = tf.gather_nd(
+                    destination_numeric_t,
+                    tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), dst], axis=1),
+                )
             time_numeric_raw = tf.gather(self.time_text_numeric_features, text_time)
             source_text = self._fuse_gated_source(
                 source_text_raw,
@@ -784,8 +809,12 @@ class ModeWiseTextLayer(k.layers.Layer):
         )
         time_out = self.time_norm(time_mode + time_alpha * time_gate * time_text)
 
-        source_keys = src * self.text_time_len + text_time
-        destination_keys = dst * self.text_time_len + text_time
+        if self.static_source_destination_text:
+            source_keys = src
+            destination_keys = dst
+        else:
+            source_keys = src * self.text_time_len + text_time
+            destination_keys = dst * self.text_time_len + text_time
         self._add_entity_alignment(
             source_mode,
             source_text,
@@ -819,6 +848,7 @@ class ModeWiseTextLayer(k.layers.Layer):
             "hidden_dim": self.hidden_dim,
             "align_dim": self.align_dim,
             "alpha_init": self.alpha_init,
+            "static_source_destination_text": self.static_source_destination_text,
             "text_align_target_ratio": self.text_align_target_ratio,
             "initial_text_align_weight": self.initial_text_align_weight,
             "alignment_temperature": self.alignment_temperature,

@@ -201,8 +201,39 @@ def main():
         raise ValueError("source/time target times do not match")
     target_count = len(metadata["target_times"])
     node_count = int(metadata["node_count"])
-    source_texts = [record["text"] for record in source_records]
-    destination_texts = [record["text"] for record in destination_records]
+    static_source_destination = (
+        metadata.get("source_destination_text_granularity") ==
+        "static_node_repeated_by_time"
+    )
+    if static_source_destination:
+        first_time = metadata["target_times"][0]
+        source_mode_records = [
+            record for record in source_records
+            if record["time_index"] == first_time
+        ]
+        destination_mode_records = [
+            record for record in destination_records
+            if record["time_index"] == first_time
+        ]
+        source_mode_records = sorted(
+            source_mode_records,
+            key=lambda item: item["satellite_id"],
+        )
+        destination_mode_records = sorted(
+            destination_mode_records,
+            key=lambda item: item["satellite_id"],
+        )
+        if (
+            len(source_mode_records) != node_count or
+            len(destination_mode_records) != node_count
+        ):
+            raise ValueError("static source/destination records are incomplete")
+    else:
+        source_mode_records = source_records
+        destination_mode_records = destination_records
+
+    source_texts = [record["text"] for record in source_mode_records]
+    destination_texts = [record["text"] for record in destination_mode_records]
     time_texts = [record["text"] for record in time_records]
 
     (
@@ -212,7 +243,11 @@ def main():
         source_numeric_fields,
         source_dropped_numeric_fields,
     ) = (
-        extract_numeric_features(source_records, SOURCE_NUMERIC_FIELDS, "source")
+        extract_numeric_features(
+            source_mode_records,
+            SOURCE_NUMERIC_FIELDS,
+            "source",
+        )
     )
     (
         destination_numeric,
@@ -222,7 +257,7 @@ def main():
         destination_dropped_numeric_fields,
     ) = (
         extract_numeric_features(
-            destination_records,
+            destination_mode_records,
             DESTINATION_NUMERIC_FIELDS,
             "destination",
         )
@@ -259,22 +294,34 @@ def main():
         normalize=normalize,
     )
     dim = source_embeddings.shape[1]
-    source_embeddings = source_embeddings.reshape(target_count, node_count, dim)
-    destination_embeddings = destination_embeddings.reshape(
-        target_count,
-        node_count,
-        dim,
-    )
-    source_numeric = source_numeric.reshape(
-        target_count,
-        node_count,
-        len(source_numeric_fields),
-    )
-    destination_numeric = destination_numeric.reshape(
-        target_count,
-        node_count,
-        len(destination_numeric_fields),
-    )
+    if static_source_destination:
+        source_embeddings = source_embeddings.reshape(node_count, dim)
+        destination_embeddings = destination_embeddings.reshape(node_count, dim)
+        source_numeric = source_numeric.reshape(
+            node_count,
+            len(source_numeric_fields),
+        )
+        destination_numeric = destination_numeric.reshape(
+            node_count,
+            len(destination_numeric_fields),
+        )
+    else:
+        source_embeddings = source_embeddings.reshape(target_count, node_count, dim)
+        destination_embeddings = destination_embeddings.reshape(
+            target_count,
+            node_count,
+            dim,
+        )
+        source_numeric = source_numeric.reshape(
+            target_count,
+            node_count,
+            len(source_numeric_fields),
+        )
+        destination_numeric = destination_numeric.reshape(
+            target_count,
+            node_count,
+            len(destination_numeric_fields),
+        )
     if destination_embeddings.shape[-1] != dim or time_embeddings.shape[-1] != dim:
         raise ValueError("source/destination/time embedding dimensions differ")
 
