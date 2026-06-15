@@ -17,7 +17,7 @@ class ModeWiseStructuralLayer(k.layers.Layer):
         self.rank = int(rank)
         self.hidden_dim = int(hidden_dim)
         self.align_dim = int(align_dim)
-        self.beta = float(beta)
+        self.beta_init = float(beta)
         self.alpha_init = float(alpha_init)
         self.source_align_weight = float(source_align_weight)
         self.destination_align_weight = float(destination_align_weight)
@@ -91,11 +91,18 @@ class ModeWiseStructuralLayer(k.layers.Layer):
         self.time_struct_proj = k.layers.Dense(align_dim)
 
     def build(self, input_shape):
-        if self.structural_enabled:
-            def init_alpha(value):
-                value = np.clip(value / 0.2, 1e-4, 1.0 - 1e-4)
-                return float(np.log(value / (1.0 - value)))
+        def init_alpha(value):
+            value = np.clip(value / 0.2, 1e-4, 1.0 - 1e-4)
+            return float(np.log(value / (1.0 - value)))
 
+        beta_initializer = k.initializers.Constant(init_alpha(self.beta_init))
+        self.beta_logit = self.add_weight(
+            name="structural_beta_logit",
+            shape=(),
+            initializer=beta_initializer,
+            trainable=True,
+        )
+        if self.structural_enabled:
             initializer = k.initializers.Constant(init_alpha(self.alpha_init))
             self.source_alpha_logit = self.add_weight(
                 name="source_alpha_logit",
@@ -161,6 +168,7 @@ class ModeWiseStructuralLayer(k.layers.Layer):
         mode_x, struct_x, unique_keys = self._aggregate_by_key(
             mode_x, struct_x, keys
         )
+        unique_count = tf.shape(unique_keys)[0]
         entity_ids = unique_keys // self.time_len
         entity_times = unique_keys % self.time_len
         same_entity = entity_ids[:, None] == entity_ids[None, :]
@@ -171,10 +179,14 @@ class ModeWiseStructuralLayer(k.layers.Layer):
             tf.logical_and(same_entity, near_time),
             tf.logical_not(diagonal),
         )
-        loss = self._masked_infonce(
-            mode_proj(mode_x),
-            struct_proj(struct_x),
-            mask=mask,
+        loss = tf.cond(
+            unique_count < 2,
+            lambda: tf.constant(0.0, dtype=tf.float32),
+            lambda: self._masked_infonce(
+                mode_proj(mode_x),
+                struct_proj(struct_x),
+                mask=mask,
+            ),
         )
         self.add_loss(weight * loss)
         self.add_metric(
@@ -194,13 +206,18 @@ class ModeWiseStructuralLayer(k.layers.Layer):
         mode_x, struct_x, unique_times = self._aggregate_by_key(
             mode_x, struct_x, times
         )
+        unique_count = tf.shape(unique_times)[0]
         dist = tf.abs(unique_times[:, None] - unique_times[None, :])
         diagonal = tf.eye(tf.shape(unique_times)[0], dtype=tf.bool)
         near = tf.logical_and(dist <= self.temporal_delta, tf.logical_not(diagonal))
-        loss = self._masked_infonce(
-            self.time_mode_proj(mode_x),
-            self.time_struct_proj(struct_x),
-            mask=near,
+        loss = tf.cond(
+            unique_count < 2,
+            lambda: tf.constant(0.0, dtype=tf.float32),
+            lambda: self._masked_infonce(
+                self.time_mode_proj(mode_x),
+                self.time_struct_proj(struct_x),
+                mask=near,
+            ),
         )
         self.add_loss(self.time_align_weight * loss)
         self.add_metric(
@@ -229,8 +246,9 @@ class ModeWiseStructuralLayer(k.layers.Layer):
         dest_delta = self.dest_time_dense_2(
             self.dest_time_dense_1(tf.concat([dst_embed, time_embed], axis=-1))
         )
-        source_mode = self.source_norm(src_embed + self.beta * source_delta)
-        dest_mode = self.dest_norm(dst_embed + self.beta * dest_delta)
+        beta = 0.2 * tf.sigmoid(self.beta_logit)
+        source_mode = self.source_norm(src_embed + beta * source_delta)
+        dest_mode = self.dest_norm(dst_embed + beta * dest_delta)
         time_mode = self.time_norm(time_embed)
 
         if not self.structural_enabled:
@@ -308,7 +326,7 @@ class ModeWiseStructuralLayer(k.layers.Layer):
             "rank": self.rank,
             "hidden_dim": self.hidden_dim,
             "align_dim": self.align_dim,
-            "beta": self.beta,
+            "beta_init": self.beta_init,
             "alpha_init": self.alpha_init,
             "source_align_weight": self.source_align_weight,
             "destination_align_weight": self.destination_align_weight,
@@ -330,7 +348,7 @@ class ModeWiseTextLayer(k.layers.Layer):
                  alpha_init=0.1, text_align_target_ratio=0.0,
                  alignment_temperature=0.2,
                  temporal_delta=2, target_start=0, text_fusion_mode="concat",
-                 numeric_alpha_init=0.05,
+                 numeric_alpha_init=0.1,
                  **kwargs):
         super().__init__(**kwargs)
         if text_fusion_mode not in ("concat", "gated_numeric"):
@@ -660,7 +678,8 @@ class ModeWiseTextLayer(k.layers.Layer):
         if not self.text_align_enabled:
             return
         mode_x, text_x, unique_keys = self._aggregate_by_key(mode_x, text_x, keys)
-        unique_count = tf.cast(tf.shape(unique_keys)[0], tf.float32)
+        unique_count = tf.shape(unique_keys)[0]
+        unique_count_float = tf.cast(unique_count, tf.float32)
         mask = None
         if not self.static_source_destination_text:
             entity_ids = unique_keys // self.text_time_len
@@ -673,7 +692,15 @@ class ModeWiseTextLayer(k.layers.Layer):
                 tf.logical_and(same_entity, near_time),
                 tf.logical_not(diagonal),
             )
-        loss = self._masked_infonce(mode_proj(mode_x), text_proj(text_x), mask=mask)
+        loss = tf.cond(
+            unique_count < 2,
+            lambda: tf.constant(0.0, dtype=tf.float32),
+            lambda: self._masked_infonce(
+                mode_proj(mode_x),
+                text_proj(text_x),
+                mask=mask,
+            ),
+        )
         self.add_loss(weight * loss)
         self.add_metric(
             loss,
@@ -686,7 +713,7 @@ class ModeWiseTextLayer(k.layers.Layer):
             aggregation="mean",
         )
         self.add_metric(
-            unique_count,
+            unique_count_float,
             name="%s_text_align_unique_count" % metric_prefix,
             aggregation="mean",
         )
@@ -695,14 +722,19 @@ class ModeWiseTextLayer(k.layers.Layer):
         if not self.text_align_enabled:
             return
         mode_x, text_x, unique_times = self._aggregate_by_key(mode_x, text_x, times)
-        unique_count = tf.cast(tf.shape(unique_times)[0], tf.float32)
+        unique_count = tf.shape(unique_times)[0]
+        unique_count_float = tf.cast(unique_count, tf.float32)
         dist = tf.abs(unique_times[:, None] - unique_times[None, :])
         diagonal = tf.eye(tf.shape(unique_times)[0], dtype=tf.bool)
         near = tf.logical_and(dist <= self.temporal_delta, tf.logical_not(diagonal))
-        loss = self._masked_infonce(
-            self.time_mode_proj(mode_x),
-            self.time_text_proj(text_x),
-            mask=near,
+        loss = tf.cond(
+            unique_count < 2,
+            lambda: tf.constant(0.0, dtype=tf.float32),
+            lambda: self._masked_infonce(
+                self.time_mode_proj(mode_x),
+                self.time_text_proj(text_x),
+                mask=near,
+            ),
         )
         self.add_loss(self.time_text_align_weight_var * loss)
         self.add_metric(loss, name="time_text_align_loss", aggregation="mean")
@@ -712,7 +744,7 @@ class ModeWiseTextLayer(k.layers.Layer):
             aggregation="mean",
         )
         self.add_metric(
-            unique_count,
+            unique_count_float,
             name="time_text_align_unique_count",
             aggregation="mean",
         )
@@ -975,7 +1007,7 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       destination_text_numeric_features=None,
                       time_text_numeric_features=None,
                       text_fusion_mode="concat",
-                      numeric_alpha_init=0.05,
+                      numeric_alpha_init=0.1,
                       text_hidden_dim=64, text_align_dim=64,
                       text_alpha=0.1, text_align_target_ratio=0.0,
                       text_target_start=0,

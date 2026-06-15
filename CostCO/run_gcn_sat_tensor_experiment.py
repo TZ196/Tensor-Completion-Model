@@ -54,18 +54,25 @@ class ConciseTrainingLogger(k.callbacks.Callback):
         )
         if not should_log:
             return
-        align_total = 0.0
+        text_align_total = 0.0
+        struct_align_total = 0.0
         for name in (
             "source_text_align_weighted_loss",
             "destination_text_align_weighted_loss",
             "time_text_align_weighted_loss",
+        ):
+            value = logs.get(name)
+            if value is not None:
+                text_align_total += float(value)
+        for name in (
             "source_struct_align_weighted_loss",
             "destination_struct_align_weighted_loss",
             "time_struct_align_weighted_loss",
         ):
             value = logs.get(name)
             if value is not None:
-                align_total += float(value)
+                struct_align_total += float(value)
+        align_total = text_align_total + struct_align_total
         parts = [
             "epoch %d/%s" % (epoch_num, total_epochs),
             "loss=%.6f" % float(logs.get("loss", 0.0)),
@@ -75,8 +82,13 @@ class ConciseTrainingLogger(k.callbacks.Callback):
             parts.append("val_loss=%.6f" % float(logs["val_loss"]))
         if "val_mae" in logs:
             parts.append("val_mae=%.6f" % float(logs["val_mae"]))
-        if align_total > 0.0:
-            parts.append("weighted_align=%.6f" % align_total)
+        if text_align_total > 0.0:
+            parts.append("text_align=%.6f" % text_align_total)
+        if struct_align_total > 0.0:
+            parts.append("struct_align=%.6f" % struct_align_total)
+        if align_total > 0.0 and "loss" in logs:
+            pred_loss = max(float(logs["loss"]) - align_total, 0.0)
+            parts.append("pred_loss~=%.6f" % pred_loss)
         print(" - ".join(parts))
 
 
@@ -343,7 +355,7 @@ def parse_args():
         choices=["concat", "gated_numeric"],
         default="concat",
     )
-    parser.add_argument("--numeric-alpha-init", type=float, default=0.05)
+    parser.add_argument("--numeric-alpha-init", type=float, default=0.1)
     parser.add_argument("--text-hidden-dim", type=int, default=64)
     parser.add_argument("--text-align-dim", type=int, default=64)
     parser.add_argument("--text-alpha", type=float, default=0.1)
