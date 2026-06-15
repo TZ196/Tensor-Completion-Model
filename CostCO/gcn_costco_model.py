@@ -327,9 +327,8 @@ class ModeWiseTextLayer(k.layers.Layer):
                  time_text_embeddings, source_text_numeric_features=None,
                  destination_text_numeric_features=None,
                  time_text_numeric_features=None, rank=50, hidden_dim=64, align_dim=64,
-                 alpha_init=0.1, source_text_align_weight=0.0,
-                 destination_text_align_weight=0.0,
-                 time_text_align_weight=0.0, alignment_temperature=0.2,
+                 alpha_init=0.1, text_align_target_ratio=0.0,
+                 alignment_temperature=0.2,
                  temporal_delta=2, target_start=0, text_fusion_mode="concat",
                  numeric_alpha_init=0.05,
                  **kwargs):
@@ -410,9 +409,9 @@ class ModeWiseTextLayer(k.layers.Layer):
         self.text_fusion_mode = text_fusion_mode
         self.numeric_alpha_init = float(numeric_alpha_init)
         self.alpha_init = float(alpha_init)
-        self.source_text_align_weight = float(source_text_align_weight)
-        self.destination_text_align_weight = float(destination_text_align_weight)
-        self.time_text_align_weight = float(time_text_align_weight)
+        self.text_align_target_ratio = float(text_align_target_ratio)
+        self.text_align_enabled = self.text_align_target_ratio > 0.0
+        self.initial_text_align_weight = 1e-5 if self.text_align_enabled else 0.0
         self.alignment_temperature = float(alignment_temperature)
         self.temporal_delta = int(temporal_delta)
         self.target_start = int(target_start)
@@ -516,6 +515,24 @@ class ModeWiseTextLayer(k.layers.Layer):
             shape=(),
             initializer=initializer,
             trainable=True,
+        )
+        self.source_text_align_weight_var = self.add_weight(
+            name="source_text_align_weight",
+            shape=(),
+            initializer=k.initializers.Constant(self.initial_text_align_weight),
+            trainable=False,
+        )
+        self.destination_text_align_weight_var = self.add_weight(
+            name="destination_text_align_weight",
+            shape=(),
+            initializer=k.initializers.Constant(self.initial_text_align_weight),
+            trainable=False,
+        )
+        self.time_text_align_weight_var = self.add_weight(
+            name="time_text_align_weight",
+            shape=(),
+            initializer=k.initializers.Constant(self.initial_text_align_weight),
+            trainable=False,
         )
         if self.text_fusion_mode == "gated_numeric":
             numeric_initializer = k.initializers.Constant(
@@ -631,7 +648,7 @@ class ModeWiseTextLayer(k.layers.Layer):
 
     def _add_entity_alignment(self, mode_x, text_x, keys, weight,
                               mode_proj, text_proj, metric_prefix):
-        if weight <= 0.0:
+        if not self.text_align_enabled:
             return
         mode_x, text_x, unique_keys = self._aggregate_by_key(mode_x, text_x, keys)
         unique_count = tf.cast(tf.shape(unique_keys)[0], tf.float32)
@@ -664,7 +681,7 @@ class ModeWiseTextLayer(k.layers.Layer):
         )
 
     def _add_time_alignment(self, mode_x, text_x, times):
-        if self.time_text_align_weight <= 0.0:
+        if not self.text_align_enabled:
             return
         mode_x, text_x, unique_times = self._aggregate_by_key(mode_x, text_x, times)
         unique_count = tf.cast(tf.shape(unique_times)[0], tf.float32)
@@ -676,10 +693,10 @@ class ModeWiseTextLayer(k.layers.Layer):
             self.time_text_proj(text_x),
             mask=near,
         )
-        self.add_loss(self.time_text_align_weight * loss)
+        self.add_loss(self.time_text_align_weight_var * loss)
         self.add_metric(loss, name="time_text_align_loss", aggregation="mean")
         self.add_metric(
-            self.time_text_align_weight * loss,
+            self.time_text_align_weight_var * loss,
             name="time_text_align_weighted_loss",
             aggregation="mean",
         )
@@ -773,7 +790,7 @@ class ModeWiseTextLayer(k.layers.Layer):
             source_mode,
             source_text,
             source_keys,
-            self.source_text_align_weight,
+            self.source_text_align_weight_var,
             self.source_mode_proj,
             self.source_text_proj,
             "source",
@@ -782,7 +799,7 @@ class ModeWiseTextLayer(k.layers.Layer):
             destination_mode,
             destination_text,
             destination_keys,
-            self.destination_text_align_weight,
+            self.destination_text_align_weight_var,
             self.destination_mode_proj,
             self.destination_text_proj,
             "destination",
@@ -802,9 +819,8 @@ class ModeWiseTextLayer(k.layers.Layer):
             "hidden_dim": self.hidden_dim,
             "align_dim": self.align_dim,
             "alpha_init": self.alpha_init,
-            "source_text_align_weight": self.source_text_align_weight,
-            "destination_text_align_weight": self.destination_text_align_weight,
-            "time_text_align_weight": self.time_text_align_weight,
+            "text_align_target_ratio": self.text_align_target_ratio,
+            "initial_text_align_weight": self.initial_text_align_weight,
             "alignment_temperature": self.alignment_temperature,
             "temporal_delta": self.temporal_delta,
             "target_start": self.target_start,
@@ -931,9 +947,7 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       text_fusion_mode="concat",
                       numeric_alpha_init=0.05,
                       text_hidden_dim=64, text_align_dim=64,
-                      text_alpha=0.1, source_text_align_weight=0.0,
-                      destination_text_align_weight=0.0,
-                      time_text_align_weight=0.0,
+                      text_alpha=0.1, text_align_target_ratio=0.0,
                       text_target_start=0,
                       output_bias_init=0.0):
     """Create CoSTCo with a trainable temporal GCN topology branch.
@@ -1014,9 +1028,7 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
             hidden_dim=text_hidden_dim,
             align_dim=text_align_dim,
             alpha_init=text_alpha,
-            source_text_align_weight=source_text_align_weight,
-            destination_text_align_weight=destination_text_align_weight,
-            time_text_align_weight=time_text_align_weight,
+            text_align_target_ratio=text_align_target_ratio,
             alignment_temperature=alignment_temperature,
             temporal_delta=temporal_delta,
             target_start=text_target_start,

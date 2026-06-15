@@ -80,6 +80,61 @@ class ConciseTrainingLogger(k.callbacks.Callback):
         print(" - ".join(parts))
 
 
+class TextAlignTargetRatioScheduler(k.callbacks.Callback):
+    def __init__(self, target_ratio, epsilon=1e-8):
+        super().__init__()
+        self.target_ratio = float(target_ratio)
+        self.epsilon = float(epsilon)
+        self.text_layer = None
+
+    def on_train_begin(self, logs=None):
+        if self.target_ratio <= 0.0:
+            return
+        try:
+            self.text_layer = self.model.get_layer("mode_wise_text_alignment")
+        except ValueError:
+            self.text_layer = None
+
+    def on_epoch_end(self, epoch, logs=None):
+        if self.target_ratio <= 0.0 or self.text_layer is None:
+            return
+        logs = logs or {}
+        text_raw = {
+            "source": logs.get("source_text_align_loss"),
+            "destination": logs.get("destination_text_align_loss"),
+            "time": logs.get("time_text_align_loss"),
+        }
+        active = [
+            (name, float(value)) for name, value in text_raw.items()
+            if value is not None and float(value) > 0.0
+        ]
+        if not active or "loss" not in logs:
+            return
+
+        weighted_names = (
+            "source_text_align_weighted_loss",
+            "destination_text_align_weighted_loss",
+            "time_text_align_weighted_loss",
+            "source_struct_align_weighted_loss",
+            "destination_struct_align_weighted_loss",
+            "time_struct_align_weighted_loss",
+        )
+        weighted_total = sum(
+            float(logs.get(name, 0.0)) for name in weighted_names
+        )
+        prediction_loss = max(float(logs["loss"]) - weighted_total, self.epsilon)
+        target_total = prediction_loss * self.target_ratio
+        target_each = target_total / float(len(active))
+
+        assignments = {
+            "source": self.text_layer.source_text_align_weight_var,
+            "destination": self.text_layer.destination_text_align_weight_var,
+            "time": self.text_layer.time_text_align_weight_var,
+        }
+        for name, raw_loss in active:
+            assignments[name].assign(target_each / (raw_loss + self.epsilon))
+
+
 def default_artifact_path(metrics_path, subdir, suffix):
     stem = os.path.splitext(os.path.basename(metrics_path))[0]
     return os.path.join(subdir, stem + suffix)
@@ -292,9 +347,15 @@ def parse_args():
     parser.add_argument("--text-hidden-dim", type=int, default=64)
     parser.add_argument("--text-align-dim", type=int, default=64)
     parser.add_argument("--text-alpha", type=float, default=0.1)
-    parser.add_argument("--source-text-align-weight", type=float, default=0.0)
-    parser.add_argument("--destination-text-align-weight", type=float, default=0.0)
-    parser.add_argument("--time-text-align-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--text-align-target-ratio",
+        type=float,
+        default=0.0,
+        help=(
+            "Automatically scale total text alignment loss to this fraction "
+            "of the prediction loss. 0 disables text alignment."
+        ),
+    )
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -362,9 +423,7 @@ def main():
             args.source_align_weight,
             args.destination_align_weight,
             args.time_align_weight,
-            args.source_text_align_weight,
-            args.destination_text_align_weight,
-            args.time_text_align_weight,
+            args.text_align_target_ratio,
         )
     )
     early_stopping_patience = args.early_stopping_patience
@@ -563,14 +622,14 @@ def main():
         text_hidden_dim=args.text_hidden_dim,
         text_align_dim=args.text_align_dim,
         text_alpha=args.text_alpha,
-        source_text_align_weight=args.source_text_align_weight,
-        destination_text_align_weight=args.destination_text_align_weight,
-        time_text_align_weight=args.time_text_align_weight,
+        text_align_target_ratio=args.text_align_target_ratio,
         text_target_start=text_target_start,
         output_bias_init=output_bias_init,
     )
     compile_gcn_costco(model, lr=args.lr)
     callbacks = []
+    if args.text_align_target_ratio > 0.0:
+        callbacks.append(TextAlignTargetRatioScheduler(args.text_align_target_ratio))
     if args.fit_verbose == 0:
         callbacks.append(ConciseTrainingLogger(log_every=args.log_every))
     if args.save_run_artifacts:
@@ -691,9 +750,7 @@ def main():
             "text_hidden_dim": args.text_hidden_dim,
             "text_align_dim": args.text_align_dim,
             "text_alpha": args.text_alpha,
-            "source_text_align_weight": args.source_text_align_weight,
-            "destination_text_align_weight": args.destination_text_align_weight,
-            "time_text_align_weight": args.time_text_align_weight,
+            "text_align_target_ratio": args.text_align_target_ratio,
             "rank": args.rank,
             "nc": args.nc,
             "node_dim": args.node_dim,

@@ -19,9 +19,7 @@ EPOCHS="${EPOCHS:-200}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 TARGET_NORMALIZATION="${TARGET_NORMALIZATION:-max}"
 
-SOURCE_TEXT_ALIGN_WEIGHT="${SOURCE_TEXT_ALIGN_WEIGHT:-0.0005}"
-DESTINATION_TEXT_ALIGN_WEIGHT="${DESTINATION_TEXT_ALIGN_WEIGHT:-0.0005}"
-TIME_TEXT_ALIGN_WEIGHT="${TIME_TEXT_ALIGN_WEIGHT:-0.001}"
+TEXT_ALIGN_TARGET_RATIO="${TEXT_ALIGN_TARGET_RATIO:-auto}"
 ALIGNMENT_TEMPERATURE="${ALIGNMENT_TEMPERATURE:-0.2}"
 TEMPORAL_DELTA="${TEMPORAL_DELTA:-2}"
 
@@ -59,6 +57,24 @@ print("vis%02d" % round(rate * 100))
 PY
 }
 
+text_align_ratio_for_rate() {
+  local rate="$1"
+  if [[ "$TEXT_ALIGN_TARGET_RATIO" != "auto" ]]; then
+    echo "$TEXT_ALIGN_TARGET_RATIO"
+    return
+  fi
+  "$PYTHON_BIN" - "$rate" <<'PY'
+import sys
+rate = float(sys.argv[1])
+if rate <= 0.05:
+    print("0.01")
+elif rate <= 0.10:
+    print("0.02")
+else:
+    print("0.03")
+PY
+}
+
 run_step() {
   local name="$1"
   shift
@@ -78,11 +94,12 @@ echo "Topology: $TOPOLOGY_PATH"
 echo "Mode text dir: $MODE_TEXT_DIR"
 echo "Seed: $SEED"
 echo "Visible rates: ${VISIBLE_RATES[*]}"
-echo "Text align weights: source=$SOURCE_TEXT_ALIGN_WEIGHT destination=$DESTINATION_TEXT_ALIGN_WEIGHT time=$TIME_TEXT_ALIGN_WEIGHT"
+echo "Text align target ratio: $TEXT_ALIGN_TARGET_RATIO"
 echo
 
 for rate in "${VISIBLE_RATES[@]}"; do
   tag="$(rate_tag "$rate")"
+  text_align_ratio="$(text_align_ratio_for_rate "$rate")"
 
   run_step "${tag}_costco_seed${SEED}" \
     "$PYTHON_BIN" run_sat_tensor_experiment.py \
@@ -123,9 +140,7 @@ for rate in "${VISIBLE_RATES[@]}"; do
     --use-mode-text \
     --mode-text-dir "$MODE_TEXT_DIR" \
     --text-fusion-mode concat \
-    --source-text-align-weight "$SOURCE_TEXT_ALIGN_WEIGHT" \
-    --destination-text-align-weight "$DESTINATION_TEXT_ALIGN_WEIGHT" \
-    --time-text-align-weight "$TIME_TEXT_ALIGN_WEIGHT" \
+    --text-align-target-ratio "$text_align_ratio" \
     --alignment-temperature "$ALIGNMENT_TEMPERATURE" \
     --temporal-delta "$TEMPORAL_DELTA" \
     --rank "$RANK" \
