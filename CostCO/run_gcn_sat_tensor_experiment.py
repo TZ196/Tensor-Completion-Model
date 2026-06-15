@@ -414,7 +414,7 @@ def parse_args():
         type=int,
         default=None,
         help=(
-            "EarlyStopping patience. Defaults to 30 when any alignment loss "
+            "EarlyStopping patience. Defaults to 20 when any alignment loss "
             "is enabled, otherwise 10."
         ),
     )
@@ -448,7 +448,7 @@ def main():
     )
     early_stopping_patience = args.early_stopping_patience
     if early_stopping_patience is None:
-        early_stopping_patience = 30 if alignment_enabled else 10
+        early_stopping_patience = 20 if alignment_enabled else 10
     observed_ratio = args.observed_ratio
     if observed_ratio is None:
         if not 0.0 < args.missing_rate < 1.0:
