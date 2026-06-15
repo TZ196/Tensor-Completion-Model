@@ -243,13 +243,18 @@ def load_mode_text_embeddings(text_dir):
     source = np.load(source_path).astype("float32")
     destination = np.load(destination_path).astype("float32")
     time = np.load(time_path).astype("float32")
-    if source.ndim != 3:
-        raise ValueError("source text embeddings must have shape [time,node,dim]")
+    if source.ndim not in (2, 3):
+        raise ValueError(
+            "source text embeddings must have shape [node,dim] "
+            "or [time,node,dim]"
+        )
     if destination.shape != source.shape:
         raise ValueError("source/destination text embeddings must share shape")
-    if time.ndim != 2 or time.shape[0] != source.shape[0]:
+    if time.ndim != 2:
         raise ValueError("time text embeddings must have shape [time,dim]")
-    if time.shape[1] != source.shape[2]:
+    if source.ndim == 3 and time.shape[0] != source.shape[0]:
+        raise ValueError("time length differs between text embedding files")
+    if time.shape[1] != source.shape[-1]:
         raise ValueError("source/destination/time text embedding dims differ")
     source_numeric = None
     destination_numeric = None
@@ -271,18 +276,21 @@ def load_mode_text_embeddings(text_dir):
         source_numeric = np.load(source_numeric_path).astype("float32")
         destination_numeric = np.load(destination_numeric_path).astype("float32")
         time_numeric = np.load(time_numeric_path).astype("float32")
-        if source_numeric.ndim != 3 or source_numeric.shape[:2] != source.shape[:2]:
-            raise ValueError(
-                "source text numeric features must have shape [time,node,dim]"
-            )
         if (
-            destination_numeric.ndim != 3 or
-            destination_numeric.shape[:2] != source.shape[:2]
+            source_numeric.ndim != source.ndim or
+            source_numeric.shape[:-1] != source.shape[:-1]
         ):
             raise ValueError(
-                "destination text numeric features must have shape [time,node,dim]"
+                "source text numeric features must match source text prefix shape"
             )
-        if time_numeric.ndim != 2 or time_numeric.shape[0] != source.shape[0]:
+        if (
+            destination_numeric.ndim != source.ndim or
+            destination_numeric.shape[:-1] != source.shape[:-1]
+        ):
+            raise ValueError(
+                "destination text numeric features must match destination text prefix shape"
+            )
+        if time_numeric.ndim != 2 or time_numeric.shape[0] != time.shape[0]:
             raise ValueError("time text numeric features must have shape [time,dim]")
         if not (
             np.all(np.isfinite(source_numeric)) and
