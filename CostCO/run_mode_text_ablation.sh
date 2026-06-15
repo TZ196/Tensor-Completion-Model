@@ -11,6 +11,7 @@ TEXT_DIR="${TEXT_DIR:-mode_text_data}"
 MODEL_PATH="${MODEL_PATH:-all-MiniLM-L6-v2}"
 HISTORY_LEN="${HISTORY_LEN:-30}"
 TARGET_START="${TARGET_START:-0}"
+TARGET_END="${TARGET_END:-}"
 SEED="${SEED:-3}"
 RANK="${RANK:-50}"
 NC="${NC:-64}"
@@ -74,13 +75,18 @@ ensure_text_embeddings() {
     exit 1
   fi
 
-  run_step "mode_text_build_records_seed${SEED}" \
-    "$PYTHON_BIN" build_mode_texts.py \
-    --tensor-path "$TENSOR_PATH" \
-    --topology-path "$TOPOLOGY_PATH" \
-    --output-dir "$TEXT_DIR" \
-    --history-len "$HISTORY_LEN" \
+  build_cmd=(
+    "$PYTHON_BIN" build_mode_texts.py
+    --tensor-path "$TENSOR_PATH"
+    --topology-path "$TOPOLOGY_PATH"
+    --output-dir "$TEXT_DIR"
+    --history-len "$HISTORY_LEN"
     --target-start "$TARGET_START"
+  )
+  if [[ -n "$TARGET_END" ]]; then
+    build_cmd+=(--target-end "$TARGET_END")
+  fi
+  run_step "mode_text_build_records_seed${SEED}" "${build_cmd[@]}"
 
   encode_cmd=(
     "$PYTHON_BIN" encode_mode_texts.py
@@ -118,62 +124,50 @@ run_step "text_ablation_T1_text_no_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
   --struct-feature-group none \
   "${text_args[@]}" \
+  --text-fusion-mode concat \
   "${base_args[@]}" \
   --metrics-path "results/text_ablation_T1_text_no_align_seed${SEED}.json"
 
-run_step "text_ablation_T2_time_text_align_seed${SEED}" \
+run_step "text_ablation_T2_text_align_001_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
   --struct-feature-group none \
   "${text_args[@]}" \
-  --time-text-align-weight 0.001 \
+  --text-fusion-mode concat \
+  --text-align-target-ratio 0.01 \
   --alignment-temperature 0.2 \
   --temporal-delta 2 \
   "${base_args[@]}" \
-  --metrics-path "results/text_ablation_T2_time_text_align_seed${SEED}.json"
+  --metrics-path "results/text_ablation_T2_text_align_001_seed${SEED}.json"
 
-run_step "text_ablation_T3_source_text_align_seed${SEED}" \
+run_step "text_ablation_T3_text_align_002_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
   --struct-feature-group none \
   "${text_args[@]}" \
-  --source-text-align-weight 0.0005 \
+  --text-fusion-mode concat \
+  --text-align-target-ratio 0.02 \
   --alignment-temperature 0.2 \
   --temporal-delta 2 \
   "${base_args[@]}" \
-  --metrics-path "results/text_ablation_T3_source_text_align_seed${SEED}.json"
+  --metrics-path "results/text_ablation_T3_text_align_002_seed${SEED}.json"
 
-run_step "text_ablation_T4_destination_text_align_seed${SEED}" \
+run_step "text_ablation_T4_gated_numeric_no_align_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
   --struct-feature-group none \
   "${text_args[@]}" \
-  --destination-text-align-weight 0.0005 \
-  --alignment-temperature 0.2 \
-  --temporal-delta 2 \
+  --text-fusion-mode gated_numeric \
   "${base_args[@]}" \
-  --metrics-path "results/text_ablation_T4_destination_text_align_seed${SEED}.json"
+  --metrics-path "results/text_ablation_T4_gated_numeric_no_align_seed${SEED}.json"
 
-run_step "text_ablation_T5_all_text_align_small_seed${SEED}" \
+run_step "text_ablation_T5_gated_numeric_align_001_seed${SEED}" \
   "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
   --struct-feature-group none \
   "${text_args[@]}" \
-  --source-text-align-weight 0.0005 \
-  --destination-text-align-weight 0.0005 \
-  --time-text-align-weight 0.001 \
+  --text-fusion-mode gated_numeric \
+  --text-align-target-ratio 0.01 \
   --alignment-temperature 0.2 \
   --temporal-delta 2 \
   "${base_args[@]}" \
-  --metrics-path "results/text_ablation_T5_all_text_align_small_seed${SEED}.json"
-
-run_step "text_ablation_T6_all_text_align_strong_seed${SEED}" \
-  "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
-  --struct-feature-group none \
-  "${text_args[@]}" \
-  --source-text-align-weight 0.001 \
-  --destination-text-align-weight 0.001 \
-  --time-text-align-weight 0.003 \
-  --alignment-temperature 0.2 \
-  --temporal-delta 2 \
-  "${base_args[@]}" \
-  --metrics-path "results/text_ablation_T6_all_text_align_strong_seed${SEED}.json"
+  --metrics-path "results/text_ablation_T5_gated_numeric_align_001_seed${SEED}.json"
 
 echo "Ablation finished at $(date)"
 echo "Result files:"
