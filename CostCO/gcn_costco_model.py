@@ -331,7 +331,7 @@ class ModeWiseTextLayer(k.layers.Layer):
                  destination_text_align_weight=0.0,
                  time_text_align_weight=0.0, alignment_temperature=0.2,
                  temporal_delta=2, target_start=0, text_fusion_mode="concat",
-                 numeric_alpha_init=0.02,
+                 numeric_alpha_init=0.05,
                  **kwargs):
         super().__init__(**kwargs)
         if text_fusion_mode not in ("concat", "gated_numeric"):
@@ -634,6 +634,7 @@ class ModeWiseTextLayer(k.layers.Layer):
         if weight <= 0.0:
             return
         mode_x, text_x, unique_keys = self._aggregate_by_key(mode_x, text_x, keys)
+        unique_count = tf.cast(tf.shape(unique_keys)[0], tf.float32)
         entity_ids = unique_keys // self.text_time_len
         entity_times = unique_keys % self.text_time_len
         same_entity = entity_ids[:, None] == entity_ids[None, :]
@@ -656,11 +657,17 @@ class ModeWiseTextLayer(k.layers.Layer):
             name="%s_text_align_weighted_loss" % metric_prefix,
             aggregation="mean",
         )
+        self.add_metric(
+            unique_count,
+            name="%s_text_align_unique_count" % metric_prefix,
+            aggregation="mean",
+        )
 
     def _add_time_alignment(self, mode_x, text_x, times):
         if self.time_text_align_weight <= 0.0:
             return
         mode_x, text_x, unique_times = self._aggregate_by_key(mode_x, text_x, times)
+        unique_count = tf.cast(tf.shape(unique_times)[0], tf.float32)
         dist = tf.abs(unique_times[:, None] - unique_times[None, :])
         diagonal = tf.eye(tf.shape(unique_times)[0], dtype=tf.bool)
         near = tf.logical_and(dist <= self.temporal_delta, tf.logical_not(diagonal))
@@ -676,6 +683,11 @@ class ModeWiseTextLayer(k.layers.Layer):
             name="time_text_align_weighted_loss",
             aggregation="mean",
         )
+        self.add_metric(
+            unique_count,
+            name="time_text_align_unique_count",
+            aggregation="mean",
+        )
 
     def call(self, inputs):
         source_mode, destination_mode, time_mode, src_input, dst_input, time_input = inputs
@@ -685,7 +697,14 @@ class ModeWiseTextLayer(k.layers.Layer):
         src = tf.cast(tf.reshape(src_input, [-1]), tf.int32)
         dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
         time = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
-        text_time = time - self.target_start
+        text_time_raw = time - self.target_start
+        text_time = tf.clip_by_value(text_time_raw, 0, self.text_time_len - 1)
+        clipped = tf.not_equal(text_time_raw, text_time)
+        self.add_metric(
+            tf.reduce_mean(tf.cast(clipped, tf.float32)),
+            name="text_time_clipped_ratio",
+            aggregation="mean",
+        )
 
         source_text_t = tf.gather(self.source_text_embeddings, text_time)
         source_text_raw = tf.gather_nd(
@@ -910,7 +929,7 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       destination_text_numeric_features=None,
                       time_text_numeric_features=None,
                       text_fusion_mode="concat",
-                      numeric_alpha_init=0.02,
+                      numeric_alpha_init=0.05,
                       text_hidden_dim=64, text_align_dim=64,
                       text_alpha=0.1, source_text_align_weight=0.0,
                       destination_text_align_weight=0.0,

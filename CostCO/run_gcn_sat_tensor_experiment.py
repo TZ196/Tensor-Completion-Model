@@ -288,7 +288,7 @@ def parse_args():
         choices=["concat", "gated_numeric"],
         default="concat",
     )
-    parser.add_argument("--numeric-alpha-init", type=float, default=0.02)
+    parser.add_argument("--numeric-alpha-init", type=float, default=0.05)
     parser.add_argument("--text-hidden-dim", type=int, default=64)
     parser.add_argument("--text-align-dim", type=int, default=64)
     parser.add_argument("--text-alpha", type=float, default=0.1)
@@ -329,6 +329,15 @@ def parse_args():
         help="Train for the full epoch count without EarlyStopping.",
     )
     parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=None,
+        help=(
+            "EarlyStopping patience. Defaults to 30 when any alignment loss "
+            "is enabled, otherwise 10."
+        ),
+    )
+    parser.add_argument(
         "--save-run-artifacts",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -336,12 +345,31 @@ def parse_args():
     )
     parser.add_argument("--checkpoint-path", default=None)
     parser.add_argument("--history-path", default=None)
+    parser.add_argument(
+        "--load-best-checkpoint-for-eval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Evaluate the best validation checkpoint when checkpointing is enabled.",
+    )
     parser.add_argument("--metrics-path", default=None)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    alignment_enabled = any(
+        weight > 0.0 for weight in (
+            args.source_align_weight,
+            args.destination_align_weight,
+            args.time_align_weight,
+            args.source_text_align_weight,
+            args.destination_text_align_weight,
+            args.time_text_align_weight,
+        )
+    )
+    early_stopping_patience = args.early_stopping_patience
+    if early_stopping_patience is None:
+        early_stopping_patience = 30 if alignment_enabled else 10
     observed_ratio = args.observed_ratio
     if observed_ratio is None:
         if not 0.0 < args.missing_rate < 1.0:
@@ -563,7 +591,7 @@ def main():
         callbacks.append(
             k.callbacks.EarlyStopping(
                 monitor="val_mae",
-                patience=10,
+                patience=early_stopping_patience,
                 restore_best_weights=True,
             )
         )
@@ -595,6 +623,13 @@ def main():
         }
         with open(args.history_path, "w") as f:
             json.dump(history_payload, f, indent=2, sort_keys=True)
+    if (
+        args.save_run_artifacts and
+        args.load_best_checkpoint_for_eval and
+        os.path.exists(args.checkpoint_path)
+    ):
+        model.load_weights(args.checkpoint_path)
+        print("Loaded best checkpoint for evaluation:", args.checkpoint_path)
 
     results = {
         "config": {
@@ -675,9 +710,11 @@ def main():
             "fit_verbose": args.fit_verbose,
             "log_every": args.log_every,
             "disable_early_stopping": args.disable_early_stopping,
+            "early_stopping_patience": early_stopping_patience,
             "save_run_artifacts": args.save_run_artifacts,
             "checkpoint_path": args.checkpoint_path,
             "history_path": args.history_path,
+            "load_best_checkpoint_for_eval": args.load_best_checkpoint_for_eval,
             "nmae": "sum(abs(y_true - y_pred)) / sum(abs(y_true))",
             "nrmse": "sqrt(sum(square(y_true - y_pred)) / sum(square(y_true)))",
         },
