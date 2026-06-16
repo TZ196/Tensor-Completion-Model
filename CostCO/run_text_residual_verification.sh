@@ -206,8 +206,20 @@ run_step "${rate_tag}_R3_text_numeric_residual_alpha${alpha_tag}_seed${SEED}" \
   --mode-text-dir "$TEXT_DIR" \
   --text-application residual \
   --text-fusion-mode gated_numeric \
+  --text-residual-mode joint \
   --text-residual-alpha-init "$TEXT_RESIDUAL_ALPHA_INIT" \
   --metrics-path "results/${rate_tag}_R3_text_numeric_residual_alpha${alpha_tag}_seed${SEED}.json"
+
+run_step "${rate_tag}_R4_strict_text_numeric_residual_alpha${alpha_tag}_seed${SEED}" \
+  "$PYTHON_BIN" run_gcn_sat_tensor_experiment.py \
+  "${common_gcn_args[@]}" \
+  --use-mode-text \
+  --mode-text-dir "$TEXT_DIR" \
+  --text-application residual \
+  --text-fusion-mode gated_numeric \
+  --text-residual-mode strict_interaction \
+  --text-residual-alpha-init "$TEXT_RESIDUAL_ALPHA_INIT" \
+  --metrics-path "results/${rate_tag}_R4_strict_text_numeric_residual_alpha${alpha_tag}_seed${SEED}.json"
 
 echo "===== Residual verification finished at $(date) ====="
 "$PYTHON_BIN" - <<PY
@@ -222,6 +234,7 @@ rows = [
     ("R1", "TextResidual", f"results/{rate_tag}_R1_text_residual_alpha{alpha_tag}_seed{seed}.json"),
     ("R2", "NumericGateResidual", f"results/{rate_tag}_R2_numeric_gate_residual_alpha{alpha_tag}_seed{seed}.json"),
     ("R3", "TextNumericResidual", f"results/{rate_tag}_R3_text_numeric_residual_alpha{alpha_tag}_seed{seed}.json"),
+    ("R4", "StrictTextNumericResidual", f"results/{rate_tag}_R4_strict_text_numeric_residual_alpha{alpha_tag}_seed{seed}.json"),
 ]
 print(f"{'Exp':4s}  {'Model':24s}  {'NMAE':>10s}  {'NRMSE':>10s}")
 print("-" * 58)

@@ -320,6 +320,16 @@ def parse_args():
         help="Initial bounded residual scale for --text-application residual.",
     )
     parser.add_argument(
+        "--text-residual-mode",
+        choices=["joint", "strict_interaction"],
+        default="joint",
+        help=(
+            "Residual design for --text-application residual. joint lets "
+            "GCN state help generate the residual value; strict_interaction "
+            "uses text to generate the value and GCN/numeric only as gates."
+        ),
+    )
+    parser.add_argument(
         "--text-align-target-ratio",
         type=float,
         default=0.0,
@@ -576,6 +586,7 @@ def main():
         text_alpha=args.text_alpha,
         text_align_target_ratio=args.text_align_target_ratio,
         text_residual_alpha_init=args.text_residual_alpha_init,
+        text_residual_mode=args.text_residual_mode,
         text_target_start=text_target_start,
         od_path_features=od_path_features,
         od_path_hidden_dim=args.od_path_hidden_dim,
@@ -705,6 +716,7 @@ def main():
             "text_align_dim": args.text_align_dim,
             "text_alpha": args.text_alpha,
             "text_residual_alpha_init": args.text_residual_alpha_init,
+            "text_residual_mode": args.text_residual_mode,
             "text_align_target_ratio": args.text_align_target_ratio,
             "rank": args.rank,
             "nc": args.nc,

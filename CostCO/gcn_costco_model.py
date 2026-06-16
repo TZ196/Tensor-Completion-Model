@@ -621,11 +621,16 @@ class TextNumericResidualLayer(k.layers.Layer):
                  destination_text_numeric_features=None,
                  time_text_numeric_features=None, hidden_dim=64,
                  residual_alpha_init=0.005, target_start=0,
-                 text_fusion_mode="gated_numeric", **kwargs):
+                 text_fusion_mode="gated_numeric",
+                 residual_mode="joint", **kwargs):
         super().__init__(**kwargs)
         if text_fusion_mode not in ("concat", "gated_numeric"):
             raise ValueError(
                 "text_fusion_mode must be 'concat' or 'gated_numeric'"
+            )
+        if residual_mode not in ("joint", "strict_interaction"):
+            raise ValueError(
+                "residual_mode must be 'joint' or 'strict_interaction'"
             )
         source = np.asarray(source_text_embeddings, dtype="float32")
         destination = np.asarray(destination_text_embeddings, dtype="float32")
@@ -648,6 +653,7 @@ class TextNumericResidualLayer(k.layers.Layer):
         self.residual_alpha_init = float(residual_alpha_init)
         self.target_start = int(target_start)
         self.text_fusion_mode = text_fusion_mode
+        self.residual_mode = residual_mode
         self.source_text_embeddings = tf.constant(source, dtype=tf.float32)
         self.destination_text_embeddings = tf.constant(destination, dtype=tf.float32)
         self.time_text_embeddings = tf.constant(time, dtype=tf.float32)
@@ -721,6 +727,24 @@ class TextNumericResidualLayer(k.layers.Layer):
         self.numeric_gate_1 = k.layers.Dense(hidden_dim, activation="gelu")
         self.numeric_gate_norm = k.layers.LayerNormalization()
         self.numeric_gate_out = k.layers.Dense(1, activation="sigmoid")
+        self.strict_text_dense_1 = k.layers.Dense(
+            hidden_dim,
+            activation="gelu",
+            use_bias=False,
+        )
+        self.strict_text_norm_1 = k.layers.LayerNormalization()
+        self.strict_text_dense_2 = k.layers.Dense(
+            max(1, hidden_dim // 2),
+            activation="gelu",
+            use_bias=False,
+        )
+        self.strict_text_norm_2 = k.layers.LayerNormalization()
+        self.strict_delta_output = k.layers.Dense(
+            1,
+            activation=None,
+            use_bias=False,
+            kernel_initializer="zeros",
+        )
 
     def build(self, input_shape):
         value = np.clip(self.residual_alpha_init / 0.2, 1e-4, 1.0 - 1e-4)
@@ -802,19 +826,33 @@ class TextNumericResidualLayer(k.layers.Layer):
             time_numeric,
         ) = self._lookup_features(src, dst, time)
 
-        text_parts = [fused_state, source_text, destination_text, time_text]
+        raw_text_parts = [source_text, destination_text, time_text]
+        text_parts = [fused_state] + raw_text_parts
         numeric_parts = []
         if self.has_numeric:
             numeric_parts = [source_numeric, destination_numeric, time_numeric]
             if self.text_fusion_mode == "concat":
                 text_parts.extend(numeric_parts)
 
-        delta_hidden = tf.concat(text_parts, axis=-1)
-        delta_hidden = self.text_dense_1(delta_hidden)
-        delta_hidden = self.text_norm_1(delta_hidden)
-        delta_hidden = self.text_dense_2(delta_hidden)
-        delta_hidden = self.text_norm_2(delta_hidden)
-        delta = self.delta_output(delta_hidden)
+        if self.residual_mode == "strict_interaction":
+            text_raw = tf.concat(raw_text_parts, axis=-1)
+            delta_hidden = self.strict_text_dense_1(text_raw)
+            delta_hidden = self.strict_text_norm_1(delta_hidden)
+            delta_hidden = self.strict_text_dense_2(delta_hidden)
+            delta_hidden = self.strict_text_norm_2(delta_hidden)
+            delta = self.strict_delta_output(delta_hidden)
+            text_present = tf.cast(
+                tf.reduce_sum(tf.abs(text_raw), axis=-1, keepdims=True) > 1e-6,
+                tf.float32,
+            )
+            delta = delta * text_present
+        else:
+            delta_hidden = tf.concat(text_parts, axis=-1)
+            delta_hidden = self.text_dense_1(delta_hidden)
+            delta_hidden = self.text_norm_1(delta_hidden)
+            delta_hidden = self.text_dense_2(delta_hidden)
+            delta_hidden = self.text_norm_2(delta_hidden)
+            delta = self.delta_output(delta_hidden)
 
         if self.has_numeric and self.text_fusion_mode == "gated_numeric":
             gate_input = tf.concat([fused_state] + numeric_parts, axis=-1)
@@ -847,6 +885,7 @@ class TextNumericResidualLayer(k.layers.Layer):
             "text_time_len": self.text_time_len,
             "static_source_destination_text": self.static_source_destination_text,
             "text_fusion_mode": self.text_fusion_mode,
+            "residual_mode": self.residual_mode,
             "has_numeric": self.has_numeric,
         })
         return config
@@ -1054,6 +1093,7 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       text_hidden_dim=64, text_align_dim=64,
                       text_alpha=0.02, text_align_target_ratio=0.0,
                       text_residual_alpha_init=0.005,
+                      text_residual_mode="joint",
                       text_target_start=0,
                       od_path_features=None, od_path_hidden_dim=64,
                       od_path_alpha_init=0.05,
@@ -1200,6 +1240,7 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
             time_text_numeric_features=time_text_numeric_features,
             hidden_dim=text_hidden_dim,
             residual_alpha_init=text_residual_alpha_init,
+            residual_mode=text_residual_mode,
             target_start=text_target_start,
             text_fusion_mode=text_fusion_mode,
             name="text_numeric_prediction_residual",
