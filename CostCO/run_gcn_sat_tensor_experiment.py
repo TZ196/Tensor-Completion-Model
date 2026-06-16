@@ -299,10 +299,10 @@ def parse_args():
         choices=["concat", "gated_numeric"],
         default="concat",
     )
-    parser.add_argument("--numeric-alpha-init", type=float, default=0.1)
+    parser.add_argument("--numeric-alpha-init", type=float, default=0.02)
     parser.add_argument("--text-hidden-dim", type=int, default=64)
     parser.add_argument("--text-align-dim", type=int, default=64)
-    parser.add_argument("--text-alpha", type=float, default=0.1)
+    parser.add_argument("--text-alpha", type=float, default=0.02)
     parser.add_argument(
         "--text-align-target-ratio",
         type=float,

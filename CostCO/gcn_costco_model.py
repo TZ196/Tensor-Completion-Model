@@ -12,10 +12,10 @@ class ModeWiseTextLayer(k.layers.Layer):
                  time_text_embeddings, source_text_numeric_features=None,
                  destination_text_numeric_features=None,
                  time_text_numeric_features=None, rank=50, hidden_dim=64, align_dim=64,
-                 alpha_init=0.1, text_align_target_ratio=0.0,
+                 alpha_init=0.02, text_align_target_ratio=0.0,
                  alignment_temperature=0.2,
                  temporal_delta=2, target_start=0, text_fusion_mode="concat",
-                 numeric_alpha_init=0.1,
+                 numeric_alpha_init=0.02,
                  **kwargs):
         super().__init__(**kwargs)
         if text_fusion_mode not in ("concat", "gated_numeric"):
@@ -154,7 +154,7 @@ class ModeWiseTextLayer(k.layers.Layer):
             self.source_numeric_proj_2 = k.layers.Dense(rank)
             self.source_numeric_proj_norm_2 = k.layers.LayerNormalization()
             self.source_numeric_gate = k.layers.Dense(rank, activation="sigmoid")
-            self.source_aux_norm = k.layers.LayerNormalization()
+            self.source_numeric_mode_gate = k.layers.Dense(rank, activation="sigmoid")
 
             self.destination_numeric_proj_1 = k.layers.Dense(hidden_dim)
             self.destination_numeric_proj_norm_1 = k.layers.LayerNormalization()
@@ -162,7 +162,10 @@ class ModeWiseTextLayer(k.layers.Layer):
             self.destination_numeric_proj_2 = k.layers.Dense(rank)
             self.destination_numeric_proj_norm_2 = k.layers.LayerNormalization()
             self.destination_numeric_gate = k.layers.Dense(rank, activation="sigmoid")
-            self.destination_aux_norm = k.layers.LayerNormalization()
+            self.destination_numeric_mode_gate = k.layers.Dense(
+                rank,
+                activation="sigmoid",
+            )
 
             self.time_numeric_proj_1 = k.layers.Dense(hidden_dim)
             self.time_numeric_proj_norm_1 = k.layers.LayerNormalization()
@@ -170,7 +173,7 @@ class ModeWiseTextLayer(k.layers.Layer):
             self.time_numeric_proj_2 = k.layers.Dense(rank)
             self.time_numeric_proj_norm_2 = k.layers.LayerNormalization()
             self.time_numeric_gate = k.layers.Dense(rank, activation="sigmoid")
-            self.time_aux_norm = k.layers.LayerNormalization()
+            self.time_numeric_mode_gate = k.layers.Dense(rank, activation="sigmoid")
 
         self.source_gate = k.layers.Dense(rank, activation="sigmoid")
         self.destination_gate = k.layers.Dense(rank, activation="sigmoid")
@@ -299,7 +302,7 @@ class ModeWiseTextLayer(k.layers.Layer):
         numeric_x = self._project_source_numeric(numeric_x)
         gate = self.source_numeric_gate(tf.concat([text_x, numeric_x], axis=-1))
         alpha = 0.2 * tf.sigmoid(self.source_numeric_alpha_logit)
-        return self.source_aux_norm(text_x + alpha * gate * numeric_x)
+        return text_x, alpha * gate * numeric_x
 
     def _fuse_gated_destination(self, text_x, numeric_x):
         text_x = self._project_destination(text_x)
@@ -308,14 +311,14 @@ class ModeWiseTextLayer(k.layers.Layer):
             tf.concat([text_x, numeric_x], axis=-1)
         )
         alpha = 0.2 * tf.sigmoid(self.destination_numeric_alpha_logit)
-        return self.destination_aux_norm(text_x + alpha * gate * numeric_x)
+        return text_x, alpha * gate * numeric_x
 
     def _fuse_gated_time(self, text_x, numeric_x):
         text_x = self._project_time(text_x)
         numeric_x = self._project_time_numeric(numeric_x)
         gate = self.time_numeric_gate(tf.concat([text_x, numeric_x], axis=-1))
         alpha = 0.2 * tf.sigmoid(self.time_numeric_alpha_logit)
-        return self.time_aux_norm(text_x + alpha * gate * numeric_x)
+        return text_x, alpha * gate * numeric_x
 
     def _masked_infonce(self, left, right, mask=None):
         left = tf.math.l2_normalize(left, axis=-1)
@@ -477,19 +480,25 @@ class ModeWiseTextLayer(k.layers.Layer):
                     tf.stack([tf.range(tf.shape(time)[0], dtype=tf.int32), dst], axis=1),
                 )
             time_numeric_raw = tf.gather(self.time_text_numeric_features, text_time)
-            source_text = self._fuse_gated_source(
+            source_text, source_numeric = self._fuse_gated_source(
                 source_text_raw,
                 source_numeric_raw,
             )
-            destination_text = self._fuse_gated_destination(
+            destination_text, destination_numeric = self._fuse_gated_destination(
                 destination_text_raw,
                 destination_numeric_raw,
             )
-            time_text = self._fuse_gated_time(time_text_raw, time_numeric_raw)
+            time_text, time_numeric = self._fuse_gated_time(
+                time_text_raw,
+                time_numeric_raw,
+            )
         else:
             source_text = self._project_source(source_text_raw)
             destination_text = self._project_destination(destination_text_raw)
             time_text = self._project_time(time_text_raw)
+            source_numeric = None
+            destination_numeric = None
+            time_numeric = None
         source_alpha = 0.2 * tf.sigmoid(self.source_alpha_logit)
         destination_alpha = 0.2 * tf.sigmoid(self.destination_alpha_logit)
         time_alpha = 0.2 * tf.sigmoid(self.time_alpha_logit)
@@ -500,13 +509,52 @@ class ModeWiseTextLayer(k.layers.Layer):
             tf.concat([destination_mode, destination_text], axis=-1)
         )
         time_gate = self.time_gate(tf.concat([time_mode, time_text], axis=-1))
-        source_out = self.source_norm(
-            source_mode + source_alpha * source_gate * source_text
+        source_delta = source_alpha * source_gate * source_text
+        destination_delta = destination_alpha * destination_gate * destination_text
+        time_delta = time_alpha * time_gate * time_text
+        if self.text_fusion_mode == "gated_numeric":
+            source_numeric_gate = self.source_numeric_mode_gate(
+                tf.concat([source_mode, source_numeric], axis=-1)
+            )
+            destination_numeric_gate = self.destination_numeric_mode_gate(
+                tf.concat([destination_mode, destination_numeric], axis=-1)
+            )
+            time_numeric_gate = self.time_numeric_mode_gate(
+                tf.concat([time_mode, time_numeric], axis=-1)
+            )
+            source_delta = source_delta + source_numeric_gate * source_numeric
+            destination_delta = (
+                destination_delta +
+                destination_numeric_gate * destination_numeric
+            )
+            time_delta = time_delta + time_numeric_gate * time_numeric
+        source_out = self.source_norm(source_mode + source_delta)
+        destination_out = self.destination_norm(destination_mode + destination_delta)
+        time_out = self.time_norm(time_mode + time_delta)
+
+        self.add_metric(source_alpha, name="source_text_alpha", aggregation="mean")
+        self.add_metric(
+            destination_alpha,
+            name="destination_text_alpha",
+            aggregation="mean",
         )
-        destination_out = self.destination_norm(
-            destination_mode + destination_alpha * destination_gate * destination_text
-        )
-        time_out = self.time_norm(time_mode + time_alpha * time_gate * time_text)
+        self.add_metric(time_alpha, name="time_text_alpha", aggregation="mean")
+        if self.text_fusion_mode == "gated_numeric":
+            self.add_metric(
+                0.2 * tf.sigmoid(self.source_numeric_alpha_logit),
+                name="source_numeric_alpha",
+                aggregation="mean",
+            )
+            self.add_metric(
+                0.2 * tf.sigmoid(self.destination_numeric_alpha_logit),
+                name="destination_numeric_alpha",
+                aggregation="mean",
+            )
+            self.add_metric(
+                0.2 * tf.sigmoid(self.time_numeric_alpha_logit),
+                name="time_numeric_alpha",
+                aggregation="mean",
+            )
 
         if self.static_source_destination_text:
             source_keys = src
@@ -762,9 +810,9 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       destination_text_numeric_features=None,
                       time_text_numeric_features=None,
                       text_fusion_mode="concat",
-                      numeric_alpha_init=0.1,
+                      numeric_alpha_init=0.02,
                       text_hidden_dim=64, text_align_dim=64,
-                      text_alpha=0.1, text_align_target_ratio=0.0,
+                      text_alpha=0.02, text_align_target_ratio=0.0,
                       text_target_start=0,
                       od_path_features=None, od_path_hidden_dim=64,
                       od_path_alpha_init=0.05,
