@@ -613,6 +613,245 @@ class ModeWiseTextLayer(k.layers.Layer):
         return config
 
 
+class TextNumericResidualLayer(k.layers.Layer):
+    """Apply text/numeric information as a bounded prediction residual."""
+
+    def __init__(self, source_text_embeddings, destination_text_embeddings,
+                 time_text_embeddings, source_text_numeric_features=None,
+                 destination_text_numeric_features=None,
+                 time_text_numeric_features=None, hidden_dim=64,
+                 residual_alpha_init=0.005, target_start=0,
+                 text_fusion_mode="gated_numeric", **kwargs):
+        super().__init__(**kwargs)
+        if text_fusion_mode not in ("concat", "gated_numeric"):
+            raise ValueError(
+                "text_fusion_mode must be 'concat' or 'gated_numeric'"
+            )
+        source = np.asarray(source_text_embeddings, dtype="float32")
+        destination = np.asarray(destination_text_embeddings, dtype="float32")
+        time = np.asarray(time_text_embeddings, dtype="float32")
+        if source.ndim not in (2, 3):
+            raise ValueError(
+                "source_text_embeddings must have shape [node,dim] "
+                "or [time,node,dim]"
+            )
+        if destination.shape != source.shape:
+            raise ValueError("source/destination text embeddings must share shape")
+        if time.ndim != 2:
+            raise ValueError("time_text_embeddings must have shape [time,dim]")
+        if source.ndim == 3 and source.shape[0] != time.shape[0]:
+            raise ValueError("source/destination/time text time lengths disagree")
+
+        self.static_source_destination_text = source.ndim == 2
+        self.text_time_len = int(time.shape[0])
+        self.hidden_dim = int(hidden_dim)
+        self.residual_alpha_init = float(residual_alpha_init)
+        self.target_start = int(target_start)
+        self.text_fusion_mode = text_fusion_mode
+        self.source_text_embeddings = tf.constant(source, dtype=tf.float32)
+        self.destination_text_embeddings = tf.constant(destination, dtype=tf.float32)
+        self.time_text_embeddings = tf.constant(time, dtype=tf.float32)
+
+        numeric_inputs = [
+            source_text_numeric_features,
+            destination_text_numeric_features,
+            time_text_numeric_features,
+        ]
+        self.has_numeric = any(value is not None for value in numeric_inputs)
+        if self.has_numeric:
+            if any(value is None for value in numeric_inputs):
+                raise ValueError(
+                    "source, destination, and time text numeric features "
+                    "must be provided together"
+                )
+            source_numeric = np.asarray(
+                source_text_numeric_features,
+                dtype="float32",
+            )
+            destination_numeric = np.asarray(
+                destination_text_numeric_features,
+                dtype="float32",
+            )
+            time_numeric = np.asarray(time_text_numeric_features, dtype="float32")
+            if (
+                source_numeric.ndim != source.ndim or
+                source_numeric.shape[:-1] != source.shape[:-1]
+            ):
+                raise ValueError(
+                    "source_text_numeric_features must match source text prefix shape"
+                )
+            if (
+                destination_numeric.ndim != destination.ndim or
+                destination_numeric.shape[:-1] != destination.shape[:-1]
+            ):
+                raise ValueError(
+                    "destination_text_numeric_features must match destination text prefix shape"
+                )
+            if time_numeric.ndim != 2 or time_numeric.shape[0] != time.shape[0]:
+                raise ValueError(
+                    "time_text_numeric_features must have shape [time,dim]"
+                )
+            self.source_text_numeric_features = tf.constant(
+                source_numeric,
+                dtype=tf.float32,
+            )
+            self.destination_text_numeric_features = tf.constant(
+                destination_numeric,
+                dtype=tf.float32,
+            )
+            self.time_text_numeric_features = tf.constant(
+                time_numeric,
+                dtype=tf.float32,
+            )
+        else:
+            self.source_text_numeric_features = None
+            self.destination_text_numeric_features = None
+            self.time_text_numeric_features = None
+
+        self.text_dense_1 = k.layers.Dense(hidden_dim, activation="gelu")
+        self.text_norm_1 = k.layers.LayerNormalization()
+        self.text_dense_2 = k.layers.Dense(max(1, hidden_dim // 2), activation="gelu")
+        self.text_norm_2 = k.layers.LayerNormalization()
+        self.delta_output = k.layers.Dense(
+            1,
+            activation=None,
+            kernel_initializer="zeros",
+            bias_initializer="zeros",
+        )
+        self.numeric_gate_1 = k.layers.Dense(hidden_dim, activation="gelu")
+        self.numeric_gate_norm = k.layers.LayerNormalization()
+        self.numeric_gate_out = k.layers.Dense(1, activation="sigmoid")
+
+    def build(self, input_shape):
+        value = np.clip(self.residual_alpha_init / 0.2, 1e-4, 1.0 - 1e-4)
+        self.residual_alpha_logit = self.add_weight(
+            name="text_numeric_residual_alpha_logit",
+            shape=(),
+            initializer=k.initializers.Constant(float(np.log(value / (1.0 - value)))),
+            trainable=True,
+        )
+        super().build(input_shape)
+
+    def _lookup_entity(self, table, text_time, entity):
+        if self.static_source_destination_text:
+            return tf.gather(table, entity)
+        table_t = tf.gather(table, text_time)
+        return tf.gather_nd(
+            table_t,
+            tf.stack(
+                [tf.range(tf.shape(entity)[0], dtype=tf.int32), entity],
+                axis=1,
+            ),
+        )
+
+    def _lookup_features(self, src, dst, time):
+        text_time_raw = time - self.target_start
+        text_time = tf.clip_by_value(text_time_raw, 0, self.text_time_len - 1)
+        clipped = tf.not_equal(text_time_raw, text_time)
+        self.add_metric(
+            tf.reduce_mean(tf.cast(clipped, tf.float32)),
+            name="residual_text_time_clipped_ratio",
+            aggregation="mean",
+        )
+
+        source_text = self._lookup_entity(
+            self.source_text_embeddings,
+            text_time,
+            src,
+        )
+        destination_text = self._lookup_entity(
+            self.destination_text_embeddings,
+            text_time,
+            dst,
+        )
+        time_text = tf.gather(self.time_text_embeddings, text_time)
+
+        if not self.has_numeric:
+            return source_text, destination_text, time_text, None, None, None
+        source_numeric = self._lookup_entity(
+            self.source_text_numeric_features,
+            text_time,
+            src,
+        )
+        destination_numeric = self._lookup_entity(
+            self.destination_text_numeric_features,
+            text_time,
+            dst,
+        )
+        time_numeric = tf.gather(self.time_text_numeric_features, text_time)
+        return (
+            source_text,
+            destination_text,
+            time_text,
+            source_numeric,
+            destination_numeric,
+            time_numeric,
+        )
+
+    def call(self, inputs):
+        base_output, fused_state, src_input, dst_input, time_input = inputs
+        src = tf.cast(tf.reshape(src_input, [-1]), tf.int32)
+        dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
+        time = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
+        (
+            source_text,
+            destination_text,
+            time_text,
+            source_numeric,
+            destination_numeric,
+            time_numeric,
+        ) = self._lookup_features(src, dst, time)
+
+        text_parts = [fused_state, source_text, destination_text, time_text]
+        numeric_parts = []
+        if self.has_numeric:
+            numeric_parts = [source_numeric, destination_numeric, time_numeric]
+            if self.text_fusion_mode == "concat":
+                text_parts.extend(numeric_parts)
+
+        delta_hidden = tf.concat(text_parts, axis=-1)
+        delta_hidden = self.text_dense_1(delta_hidden)
+        delta_hidden = self.text_norm_1(delta_hidden)
+        delta_hidden = self.text_dense_2(delta_hidden)
+        delta_hidden = self.text_norm_2(delta_hidden)
+        delta = self.delta_output(delta_hidden)
+
+        if self.has_numeric and self.text_fusion_mode == "gated_numeric":
+            gate_input = tf.concat([fused_state] + numeric_parts, axis=-1)
+            gate = self.numeric_gate_1(gate_input)
+            gate = self.numeric_gate_norm(gate)
+            gate = self.numeric_gate_out(gate)
+        else:
+            gate = tf.ones_like(delta)
+
+        residual_alpha = 0.2 * tf.sigmoid(self.residual_alpha_logit)
+        residual = residual_alpha * gate * delta
+        self.add_metric(
+            residual_alpha,
+            name="text_numeric_residual_alpha",
+            aggregation="mean",
+        )
+        self.add_metric(tf.reduce_mean(gate), name="text_numeric_gate_mean")
+        self.add_metric(
+            tf.reduce_mean(tf.abs(residual)),
+            name="text_numeric_residual_abs_mean",
+        )
+        return base_output + residual
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "hidden_dim": self.hidden_dim,
+            "residual_alpha_init": self.residual_alpha_init,
+            "target_start": self.target_start,
+            "text_time_len": self.text_time_len,
+            "static_source_destination_text": self.static_source_destination_text,
+            "text_fusion_mode": self.text_fusion_mode,
+            "has_numeric": self.has_numeric,
+        })
+        return config
+
+
 class ODPathFeatureLayer(k.layers.Layer):
     """Inject OD-specific path features into the fused prediction state."""
 
@@ -810,9 +1049,11 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
                       destination_text_numeric_features=None,
                       time_text_numeric_features=None,
                       text_fusion_mode="concat",
+                      text_application="mode",
                       numeric_alpha_init=0.02,
                       text_hidden_dim=64, text_align_dim=64,
                       text_alpha=0.02, text_align_target_ratio=0.0,
+                      text_residual_alpha_init=0.005,
                       text_target_start=0,
                       od_path_features=None, od_path_hidden_dim=64,
                       od_path_alpha_init=0.05,
@@ -846,7 +1087,9 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
         destination_text_embeddings is not None or
         time_text_embeddings is not None
     )
-    if text_enabled:
+    if text_application not in ("mode", "residual"):
+        raise ValueError("text_application must be 'mode' or 'residual'")
+    if text_enabled and text_application == "mode":
         if (
             source_text_embeddings is None or
             destination_text_embeddings is None or
@@ -939,6 +1182,28 @@ def create_gcn_costco(shape, topology, rank=50, nc=64, node_dim=32,
         bias_initializer=k.initializers.Constant(output_bias_init),
         name="traffic_output",
     )(fused)
+    if text_enabled and text_application == "residual":
+        if (
+            source_text_embeddings is None or
+            destination_text_embeddings is None or
+            time_text_embeddings is None
+        ):
+            raise ValueError(
+                "source, destination, and time text embeddings must be provided together"
+            )
+        output = TextNumericResidualLayer(
+            source_text_embeddings=source_text_embeddings,
+            destination_text_embeddings=destination_text_embeddings,
+            time_text_embeddings=time_text_embeddings,
+            source_text_numeric_features=source_text_numeric_features,
+            destination_text_numeric_features=destination_text_numeric_features,
+            time_text_numeric_features=time_text_numeric_features,
+            hidden_dim=text_hidden_dim,
+            residual_alpha_init=text_residual_alpha_init,
+            target_start=text_target_start,
+            text_fusion_mode=text_fusion_mode,
+            name="text_numeric_prediction_residual",
+        )([output, fused, inputs[0], inputs[1], inputs[2]])
     return k.Model(inputs=inputs, outputs=output, name="GCN_CoSTCo")
 
 

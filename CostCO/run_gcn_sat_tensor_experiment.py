@@ -299,10 +299,26 @@ def parse_args():
         choices=["concat", "gated_numeric"],
         default="concat",
     )
+    parser.add_argument(
+        "--text-application",
+        choices=["mode", "residual"],
+        default="mode",
+        help=(
+            "mode injects text/numeric into CoSTCo mode embeddings; residual "
+            "keeps the GCN-CoSTCo backbone intact and applies text/numeric as "
+            "a bounded prediction residual."
+        ),
+    )
     parser.add_argument("--numeric-alpha-init", type=float, default=0.02)
     parser.add_argument("--text-hidden-dim", type=int, default=64)
     parser.add_argument("--text-align-dim", type=int, default=64)
     parser.add_argument("--text-alpha", type=float, default=0.02)
+    parser.add_argument(
+        "--text-residual-alpha-init",
+        type=float,
+        default=0.005,
+        help="Initial bounded residual scale for --text-application residual.",
+    )
     parser.add_argument(
         "--text-align-target-ratio",
         type=float,
@@ -374,6 +390,11 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.text_application == "residual" and args.text_align_target_ratio > 0.0:
+        raise ValueError(
+            "--text-align-target-ratio is only supported by "
+            "--text-application mode. Keep it at 0 for residual verification."
+        )
     alignment_enabled = args.text_align_target_ratio > 0.0
     early_stopping_patience = args.early_stopping_patience
     if early_stopping_patience is None:
@@ -548,11 +569,13 @@ def main():
         destination_text_numeric_features=destination_text_numeric_features,
         time_text_numeric_features=time_text_numeric_features,
         text_fusion_mode=args.text_fusion_mode,
+        text_application=args.text_application,
         numeric_alpha_init=args.numeric_alpha_init,
         text_hidden_dim=args.text_hidden_dim,
         text_align_dim=args.text_align_dim,
         text_alpha=args.text_alpha,
         text_align_target_ratio=args.text_align_target_ratio,
+        text_residual_alpha_init=args.text_residual_alpha_init,
         text_target_start=text_target_start,
         od_path_features=od_path_features,
         od_path_hidden_dim=args.od_path_hidden_dim,
@@ -662,6 +685,7 @@ def main():
             "use_mode_text": args.use_mode_text,
             "mode_text_dir": args.mode_text_dir,
             "text_fusion_mode": args.text_fusion_mode,
+            "text_application": args.text_application,
             "numeric_alpha_init": args.numeric_alpha_init,
             "text_embedding_metadata": text_metadata,
             "use_text_numeric_features": source_text_numeric_features is not None,
@@ -680,6 +704,7 @@ def main():
             "text_hidden_dim": args.text_hidden_dim,
             "text_align_dim": args.text_align_dim,
             "text_alpha": args.text_alpha,
+            "text_residual_alpha_init": args.text_residual_alpha_init,
             "text_align_target_ratio": args.text_align_target_ratio,
             "rank": args.rank,
             "nc": args.nc,
