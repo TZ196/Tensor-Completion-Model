@@ -41,6 +41,10 @@ wandb/
 CostCO/__pycache__/
 CostCO/results/
 CostCO/splits/
-Satfomer/__pycache__/
-Satfomer/results/
-Satfomer/splits/
+CostCO/.codegraph/
+CostCO/all-MiniLM-L6-v2/
+TimesNet/__pycache__/
+TimesNet/layers/__pycache__/
+TimesNet/models/__pycache__/
+TimesNet/results/
+TimesNet/splits/
