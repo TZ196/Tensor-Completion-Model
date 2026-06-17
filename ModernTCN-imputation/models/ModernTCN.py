@@ -134,12 +134,15 @@ class Block(nn.Module):
         self.ffn1drop1 = nn.Dropout(drop)
         self.ffn1drop2 = nn.Dropout(drop)
 
-        #convffn2
+        # convffn2. The original benchmark code groups this layer by dmodel,
+        # which creates O(nvars^2) parameters. For 120x120 OD variables that
+        # is too large to instantiate, so keep the channel mixing independent
+        # per OD variable.
         self.ffn2pw1 = nn.Conv1d(in_channels=nvars * dmodel, out_channels=nvars * dff, kernel_size=1, stride=1,
-                                 padding=0, dilation=1, groups=dmodel)
+                                 padding=0, dilation=1, groups=nvars)
         self.ffn2act = nn.GELU()
         self.ffn2pw2 = nn.Conv1d(in_channels=nvars * dff, out_channels=nvars * dmodel, kernel_size=1, stride=1,
-                                 padding=0, dilation=1, groups=dmodel)
+                                 padding=0, dilation=1, groups=nvars)
         self.ffn2drop1 = nn.Dropout(drop)
         self.ffn2drop2 = nn.Dropout(drop)
 
