@@ -128,18 +128,26 @@ def parse_int_list(value):
     return [int(item) for item in value.replace(",", " ").split()]
 
 
+def expand_stage_dims(values, min_len=4):
+    if len(values) == 1:
+        return values * min_len
+    if len(values) < min_len:
+        return values + [values[-1]] * (min_len - len(values))
+    return values
+
+
 def build_moderntcn_configs(args, input_dim, seq_len):
-    dims = parse_int_list(args.dims)
-    dw_dims = parse_int_list(args.dw_dims)
     num_blocks = parse_int_list(args.num_blocks)
     large_size = parse_int_list(args.large_size)
     small_size = parse_int_list(args.small_size)
-    lengths = {len(dims), len(dw_dims), len(num_blocks), len(large_size), len(small_size)}
-    if len(lengths) != 1:
+    stage_lengths = {len(num_blocks), len(large_size), len(small_size)}
+    if len(stage_lengths) != 1:
         raise ValueError(
-            "--dims, --dw-dims, --num-blocks, --large-size, and --small-size "
-            "must have the same number of stages"
+            "--num-blocks, --large-size, and --small-size must have the same "
+            "number of stages"
         )
+    dims = expand_stage_dims(parse_int_list(args.dims))
+    dw_dims = expand_stage_dims(parse_int_list(args.dw_dims))
     return SimpleNamespace(
         task_name="imputation",
         seq_len=seq_len,
