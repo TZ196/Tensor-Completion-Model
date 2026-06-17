@@ -48,3 +48,11 @@ TimesNet/layers/__pycache__/
 TimesNet/models/__pycache__/
 TimesNet/results/
 TimesNet/splits/
+ModernTCN-imputation/__pycache__/
+ModernTCN-imputation/layers/__pycache__/
+ModernTCN-imputation/models/__pycache__/
+ModernTCN-imputation/results/
+ModernTCN-imputation/splits/
+ModernTCN-imputation/logs/
+ModernTCN-imputation/checkpoints/
+ModernTCN-imputation/test_results/
