@@ -624,7 +624,6 @@ def create_gt_mst_model(
     x = k.layers.Dense(max(1, ff_dim // 2), activation="gelu", name="prediction_dense_2")(x)
     output = k.layers.Dense(
         1,
-        activation="relu",
         bias_initializer=k.initializers.Constant(output_bias_init),
         name="traffic_prediction",
     )(x)
