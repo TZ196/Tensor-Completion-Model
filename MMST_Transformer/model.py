@@ -480,12 +480,33 @@ class TransformerEncoderStack(k.layers.Layer):
 
 
 class TokenPooling(k.layers.Layer):
-    """Concatenate all token outputs and mean pooling."""
+    """Concatenate all token outputs and mean pooling.
+
+    Keras Dense layers require a known last dimension. The Transformer output
+    has static shape [B, token_count, d_model], so the pooled representation is
+    explicitly reshaped to [B, token_count * d_model + d_model].
+    """
+
+    def __init__(self, token_count, d_model, **kwargs):
+        super().__init__(**kwargs)
+        self.token_count = int(token_count)
+        self.d_model = int(d_model)
 
     def call(self, x):
-        flat = tf.reshape(x, [tf.shape(x)[0], -1])
+        flat = tf.reshape(x, [tf.shape(x)[0], self.token_count * self.d_model])
         mean = tf.reduce_mean(x, axis=1)
         return tf.concat([flat, mean], axis=-1)
+
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], self.token_count * self.d_model + self.d_model)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "token_count": self.token_count,
+            "d_model": self.d_model,
+        })
+        return config
 
 
 def create_gt_mst_model(
@@ -590,7 +611,11 @@ def create_gt_mst_model(
             dropout=dropout,
             name="transformer_encoder",
         )(token_tensor)
-        x = TokenPooling(name="token_pooling")(token_tensor)
+        x = TokenPooling(
+            token_count=len(tokens),
+            d_model=d_model,
+            name="token_pooling",
+        )(token_tensor)
     else:
         x = k.layers.Concatenate(name="token_concat_without_transformer")(tokens)
 
@@ -605,4 +630,3 @@ def create_gt_mst_model(
     )(x)
 
     return k.Model(inputs=[src_input, dst_input, time_input], outputs=output, name="GT_MST")
-
