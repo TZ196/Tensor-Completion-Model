@@ -88,12 +88,38 @@ class TextInjectionLayer(k.layers.Layer):
             self.destination_numeric_features = None
             self.time_numeric_features = None
 
+        alpha_ratio = np.clip(self.alpha_init / 0.2, 1e-4, 1.0 - 1e-4)
+        alpha_bias = float(np.log(alpha_ratio / (1.0 - alpha_ratio)))
         self.source_projector = self._make_projector("source_text_projector")
         self.destination_projector = self._make_projector("destination_text_projector")
         self.time_projector = self._make_projector("time_text_projector")
         self.source_gate = k.layers.Dense(d_model, activation="sigmoid", name="source_text_gate")
         self.destination_gate = k.layers.Dense(d_model, activation="sigmoid", name="destination_text_gate")
         self.time_gate = k.layers.Dense(d_model, activation="sigmoid", name="time_text_gate")
+        self.source_numeric_gate = k.layers.Dense(d_model, activation="sigmoid", name="source_numeric_control_gate")
+        self.destination_numeric_gate = k.layers.Dense(d_model, activation="sigmoid", name="destination_numeric_control_gate")
+        self.time_numeric_gate = k.layers.Dense(d_model, activation="sigmoid", name="time_numeric_control_gate")
+        self.source_alpha_gate = k.layers.Dense(
+            1,
+            activation="sigmoid",
+            kernel_initializer="zeros",
+            bias_initializer=k.initializers.Constant(alpha_bias),
+            name="source_adaptive_text_alpha",
+        )
+        self.destination_alpha_gate = k.layers.Dense(
+            1,
+            activation="sigmoid",
+            kernel_initializer="zeros",
+            bias_initializer=k.initializers.Constant(alpha_bias),
+            name="destination_adaptive_text_alpha",
+        )
+        self.time_alpha_gate = k.layers.Dense(
+            1,
+            activation="sigmoid",
+            kernel_initializer="zeros",
+            bias_initializer=k.initializers.Constant(alpha_bias),
+            name="time_adaptive_text_alpha",
+        )
         self.source_norm = k.layers.LayerNormalization(name="source_text_injection_norm")
         self.destination_norm = k.layers.LayerNormalization(name="destination_text_injection_norm")
         self.time_norm = k.layers.LayerNormalization(name="time_text_injection_norm")
@@ -118,27 +144,6 @@ class TextInjectionLayer(k.layers.Layer):
         )
 
     def build(self, input_shape):
-        init = np.clip(self.alpha_init / 0.2, 1e-4, 1.0 - 1e-4)
-        alpha_logit = float(np.log(init / (1.0 - init)))
-        initializer = k.initializers.Constant(alpha_logit)
-        self.source_alpha_logit = self.add_weight(
-            name="source_text_alpha_logit",
-            shape=(),
-            initializer=initializer,
-            trainable=True,
-        )
-        self.destination_alpha_logit = self.add_weight(
-            name="destination_text_alpha_logit",
-            shape=(),
-            initializer=initializer,
-            trainable=True,
-        )
-        self.time_alpha_logit = self.add_weight(
-            name="time_text_alpha_logit",
-            shape=(),
-            initializer=initializer,
-            trainable=True,
-        )
         self.source_text_align_weight_var = self.add_weight(
             name="source_text_align_weight",
             shape=(),
@@ -189,13 +194,9 @@ class TextInjectionLayer(k.layers.Layer):
         )
         time_text = tf.gather(self.time_text_embeddings, text_time)
 
-        source_parts = []
-        destination_parts = []
-        time_parts = []
-        if self.text_mode in ("text_only", "text_numeric"):
-            source_parts.append(source_text)
-            destination_parts.append(destination_text)
-            time_parts.append(time_text)
+        source_num = None
+        destination_num = None
+        time_num = None
         if self.text_mode in ("numeric_only", "text_numeric"):
             source_num, destination_num = self._lookup_source_destination(
                 src,
@@ -205,14 +206,15 @@ class TextInjectionLayer(k.layers.Layer):
                 self.destination_numeric_features,
             )
             time_num = tf.gather(self.time_numeric_features, text_time)
-            source_parts.append(source_num)
-            destination_parts.append(destination_num)
-            time_parts.append(time_num)
-
-        source_raw = tf.concat(source_parts, axis=-1)
-        destination_raw = tf.concat(destination_parts, axis=-1)
-        time_raw = tf.concat(time_parts, axis=-1)
-        return source_raw, destination_raw, time_raw, source_text, destination_text, time_text, text_time
+        return (
+            source_text,
+            destination_text,
+            time_text,
+            source_num,
+            destination_num,
+            time_num,
+            text_time,
+        )
 
     def _masked_infonce(self, left, right, mask=None):
         left = tf.math.l2_normalize(left, axis=-1)
@@ -276,40 +278,94 @@ class TextInjectionLayer(k.layers.Layer):
         )
 
     def call(self, inputs):
-        source_token, destination_token, time_token, src_input, dst_input, time_input = inputs
+        source_token, destination_token, time_token, graph_context, src_input, dst_input, time_input = inputs
         src = tf.cast(tf.reshape(src_input, [-1]), tf.int32)
         dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
         time = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
 
         (
-            source_raw,
-            destination_raw,
-            time_raw,
             source_text_raw,
             destination_text_raw,
             time_text_raw,
+            source_numeric_raw,
+            destination_numeric_raw,
+            time_numeric_raw,
             text_time,
         ) = self._raw_features(src, dst, time)
 
-        source_proj = self.source_projector(source_raw)
-        destination_proj = self.destination_projector(destination_raw)
-        time_proj = self.time_projector(time_raw)
+        if self.text_mode == "numeric_only":
+            source_proj = self.source_projector(source_numeric_raw)
+            destination_proj = self.destination_projector(destination_numeric_raw)
+            time_proj = self.time_projector(time_numeric_raw)
+            source_numeric_gate = 1.0
+            destination_numeric_gate = 1.0
+            time_numeric_gate = 1.0
+        else:
+            source_proj = self.source_projector(source_text_raw)
+            destination_proj = self.destination_projector(destination_text_raw)
+            time_proj = self.time_projector(time_text_raw)
+            if self.text_mode == "text_numeric":
+                source_numeric_gate = self.source_numeric_gate(
+                    tf.concat(
+                        [source_numeric_raw, source_token, source_proj, graph_context],
+                        axis=-1,
+                    )
+                )
+                destination_numeric_gate = self.destination_numeric_gate(
+                    tf.concat(
+                        [
+                            destination_numeric_raw,
+                            destination_token,
+                            destination_proj,
+                            graph_context,
+                        ],
+                        axis=-1,
+                    )
+                )
+                time_numeric_gate = self.time_numeric_gate(
+                    tf.concat([time_numeric_raw, time_token, time_proj, graph_context], axis=-1)
+                )
+            else:
+                source_numeric_gate = 1.0
+                destination_numeric_gate = 1.0
+                time_numeric_gate = 1.0
 
-        source_alpha = 0.2 * tf.sigmoid(self.source_alpha_logit)
-        destination_alpha = 0.2 * tf.sigmoid(self.destination_alpha_logit)
-        time_alpha = 0.2 * tf.sigmoid(self.time_alpha_logit)
+        source_alpha = 0.2 * self.source_alpha_gate(
+            tf.concat([source_token, source_proj, graph_context], axis=-1)
+        )
+        destination_alpha = 0.2 * self.destination_alpha_gate(
+            tf.concat([destination_token, destination_proj, graph_context], axis=-1)
+        )
+        time_alpha = 0.2 * self.time_alpha_gate(
+            tf.concat([time_token, time_proj, graph_context], axis=-1)
+        )
 
-        source_gate = self.source_gate(tf.concat([source_token, source_proj], axis=-1))
-        destination_gate = self.destination_gate(tf.concat([destination_token, destination_proj], axis=-1))
-        time_gate = self.time_gate(tf.concat([time_token, time_proj], axis=-1))
+        source_gate = self.source_gate(
+            tf.concat([source_token, source_proj, graph_context], axis=-1)
+        )
+        destination_gate = self.destination_gate(
+            tf.concat([destination_token, destination_proj, graph_context], axis=-1)
+        )
+        time_gate = self.time_gate(tf.concat([time_token, time_proj, graph_context], axis=-1))
 
-        source_out = self.source_norm(source_token + source_alpha * source_gate * source_proj)
-        destination_out = self.destination_norm(destination_token + destination_alpha * destination_gate * destination_proj)
-        time_out = self.time_norm(time_token + time_alpha * time_gate * time_proj)
+        source_out = self.source_norm(
+            source_token + source_alpha * source_gate * source_numeric_gate * source_proj
+        )
+        destination_out = self.destination_norm(
+            destination_token +
+            destination_alpha * destination_gate * destination_numeric_gate * destination_proj
+        )
+        time_out = self.time_norm(
+            time_token + time_alpha * time_gate * time_numeric_gate * time_proj
+        )
 
-        self.add_metric(source_alpha, name="source_text_alpha", aggregation="mean")
-        self.add_metric(destination_alpha, name="destination_text_alpha", aggregation="mean")
-        self.add_metric(time_alpha, name="time_text_alpha", aggregation="mean")
+        self.add_metric(tf.reduce_mean(source_alpha), name="source_text_alpha", aggregation="mean")
+        self.add_metric(
+            tf.reduce_mean(destination_alpha),
+            name="destination_text_alpha",
+            aggregation="mean",
+        )
+        self.add_metric(tf.reduce_mean(time_alpha), name="time_text_alpha", aggregation="mean")
 
         if self.static_source_destination_text:
             source_keys = src
@@ -409,7 +465,20 @@ class DynamicGCNGraphToken(k.layers.Layer):
         batch = tf.range(tf.shape(src)[0], dtype=tf.int32)
         h_i = tf.gather_nd(h, tf.stack([batch, src], axis=1))
         h_j = tf.gather_nd(h, tf.stack([batch, dst], axis=1))
-        pair = tf.concat([h_i, h_j, tf.abs(h_i - h_j), h_i * h_j], axis=-1)
+        neighbor_context = tf.matmul(adjacency, h)
+        context_i = tf.gather_nd(neighbor_context, tf.stack([batch, src], axis=1))
+        context_j = tf.gather_nd(neighbor_context, tf.stack([batch, dst], axis=1))
+        pair = tf.concat(
+            [
+                h_i,
+                h_j,
+                tf.abs(h_i - h_j),
+                h_i * h_j,
+                context_i,
+                context_j,
+            ],
+            axis=-1,
+        )
         graph_token = self.graph_projector(pair)
 
         # Explicit runtime shape assertion: graph token must match mode tokens.
@@ -565,6 +634,23 @@ def create_gt_mst_model(
     destination_token = k.layers.Reshape((d_model,))(destination_token)
     time_token = k.layers.Reshape((d_model,))(time_token)
 
+    graph_token = None
+    if use_graph_token:
+        graph_token = DynamicGCNGraphToken(
+            topology=topology,
+            node_dim=node_dim,
+            gcn_dim=gcn_dim,
+            d_model=d_model,
+            dropout=dropout,
+            name="dynamic_gcn_graph_token",
+        )([src_input, dst_input, time_input])
+        graph_context = graph_token
+    else:
+        graph_context = k.layers.Lambda(
+            lambda x: tf.zeros_like(x),
+            name="zero_graph_context",
+        )(source_token)
+
     if use_mode_text:
         source_token, destination_token, time_token = TextInjectionLayer(
             source_text_embeddings=source_text_embeddings,
@@ -583,18 +669,18 @@ def create_gt_mst_model(
             temporal_delta=temporal_delta,
             target_start=text_target_start,
             name="text_injection",
-        )([source_token, destination_token, time_token, src_input, dst_input, time_input])
+        )([
+            source_token,
+            destination_token,
+            time_token,
+            graph_context,
+            src_input,
+            dst_input,
+            time_input,
+        ])
 
     tokens = [source_token, destination_token, time_token]
-    if use_graph_token:
-        graph_token = DynamicGCNGraphToken(
-            topology=topology,
-            node_dim=node_dim,
-            gcn_dim=gcn_dim,
-            d_model=d_model,
-            dropout=dropout,
-            name="dynamic_gcn_graph_token",
-        )([src_input, dst_input, time_input])
+    if graph_token is not None:
         tokens.append(graph_token)
 
     if use_transformer:
