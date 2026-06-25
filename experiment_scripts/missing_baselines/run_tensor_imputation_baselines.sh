@@ -51,6 +51,46 @@ echo "Visible rates: $VISIBLE_RATES"
 echo "Summary CSV: $summary_csv"
 echo
 
+activate_conda_env() {
+  if [[ "${SKIP_CONDA_ACTIVATE:-0}" == "1" ]]; then
+    echo "Skipping conda activation because SKIP_CONDA_ACTIVATE=1"
+    return
+  fi
+  if [[ -n "${CONDA_EXE:-}" ]]; then
+    eval "$("$CONDA_EXE" shell.bash hook)"
+  elif command -v conda >/dev/null 2>&1; then
+    local conda_base
+    conda_base="$(conda info --base)"
+    # shellcheck disable=SC1090
+    source "$conda_base/etc/profile.d/conda.sh"
+  elif [[ -f "$HOME/.conda/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOME/.conda/etc/profile.d/conda.sh"
+  elif [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+  elif [[ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+  else
+    echo "Could not find conda.sh. Set SKIP_CONDA_ACTIVATE=1 if the environment is already active." >&2
+    exit 1
+  fi
+  conda activate "$CONDA_ENV"
+  CONDA_ENV_ACTIVATED=1
+  echo "Activated conda environment: $CONDA_ENV"
+}
+
+deactivate_conda_env() {
+  if [[ "${CONDA_ENV_ACTIVATED:-0}" == "1" ]]; then
+    conda deactivate || true
+    echo "Deactivated conda environment: $CONDA_ENV"
+  fi
+}
+
+trap deactivate_conda_env EXIT
+activate_conda_env
+
 for model in $MODELS; do
   model_dir="$REPO_DIR/$model"
   if [[ ! -d "$model_dir" ]]; then
@@ -60,7 +100,7 @@ for model in $MODELS; do
   echo "----- Running $model -----"
   (
     cd "$model_dir"
-    SKIP_CONDA_ACTIVATE="${SKIP_CONDA_ACTIVATE:-0}" \
+    SKIP_CONDA_ACTIVATE=1 \
     CONDA_ENV="$CONDA_ENV" \
     PYTHON_BIN="$PYTHON_BIN" \
     TENSOR_PATH="$TENSOR_PATH" \
