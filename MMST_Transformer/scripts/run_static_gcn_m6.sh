@@ -27,8 +27,10 @@ ALIGNMENT_TEMPERATURE="${ALIGNMENT_TEMPERATURE:-0.2}"
 TEMPORAL_DELTA="${TEMPORAL_DELTA:-2}"
 EARLY_STOPPING_PATIENCE="${EARLY_STOPPING_PATIENCE:-20}"
 
-VISIBLE_RATES=(${VISIBLE_RATES:-7 10 20})
-VARIANTS=(${VARIANTS:-M6})
+VISIBLE_RATES_RAW="${VISIBLE_RATES:-7 10 20}"
+VARIANTS_RAW="${VARIANTS:-M6}"
+VISIBLE_RATES=($VISIBLE_RATES_RAW)
+VARIANTS=($VARIANTS_RAW)
 
 mkdir -p logs results splits checkpoints histories
 
@@ -37,7 +39,30 @@ master_log="logs/gt_mst_static_gcn_m6_${timestamp}.log"
 pid_file="logs/gt_mst_static_gcn_m6.pid"
 
 if [[ "${1:-}" != "--foreground" ]]; then
-  nohup bash "$0" --foreground > "$master_log" 2>&1 &
+  nohup env \
+    PYTHON_BIN="$PYTHON_BIN" \
+    TENSOR_PATH="$TENSOR_PATH" \
+    TOPOLOGY_PATH="$TOPOLOGY_PATH" \
+    MODE_TEXT_DIR="$MODE_TEXT_DIR" \
+    SEED="$SEED" \
+    D_MODEL="$D_MODEL" \
+    NODE_DIM="$NODE_DIM" \
+    GCN_DIM="$GCN_DIM" \
+    TRANSFORMER_LAYERS="$TRANSFORMER_LAYERS" \
+    NUM_HEADS="$NUM_HEADS" \
+    FF_DIM="$FF_DIM" \
+    DROPOUT="$DROPOUT" \
+    LR="$LR" \
+    EPOCHS="$EPOCHS" \
+    BATCH_SIZE="$BATCH_SIZE" \
+    TARGET_NORMALIZATION="$TARGET_NORMALIZATION" \
+    TEXT_ALIGN_TARGET_RATIO="$TEXT_ALIGN_TARGET_RATIO" \
+    ALIGNMENT_TEMPERATURE="$ALIGNMENT_TEMPERATURE" \
+    TEMPORAL_DELTA="$TEMPORAL_DELTA" \
+    EARLY_STOPPING_PATIENCE="$EARLY_STOPPING_PATIENCE" \
+    VISIBLE_RATES="$VISIBLE_RATES_RAW" \
+    VARIANTS="$VARIANTS_RAW" \
+    bash "$0" --foreground > "$master_log" 2>&1 &
   pid="$!"
   echo "$pid" > "$pid_file"
   echo "Started Static-GCN GT-MST run in background."
@@ -157,4 +182,3 @@ for rate in rates:
         print(f"{rate:>6d}%  {variant:>7s}  {test['nmae']:10.6f}  {test['nrmse']:10.6f}")
     print("-" * 44)
 PY
-
