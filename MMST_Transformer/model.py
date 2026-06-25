@@ -397,16 +397,20 @@ class TextInjectionLayer(k.layers.Layer):
         return source_out, destination_out, time_out
 
 
-class DynamicGCNGraphToken(k.layers.Layer):
-    """Build a graph token in exactly d_model dimensions from dynamic A_t."""
+class StaticGCNGraphToken(k.layers.Layer):
+    """Build a graph token from the fixed satellite adjacency topology[0].
+
+    The satellite path graph is treated as a static structural prior. Temporal
+    variation is handled by the time token and Transformer interaction, not by
+    changing the GCN adjacency.
+    """
 
     def __init__(self, topology, node_dim=64, gcn_dim=128, d_model=64, dropout=0.0, **kwargs):
         super().__init__(**kwargs)
         topo = np.asarray(topology, dtype="float32")
         if topo.ndim != 3 or topo.shape[1] != topo.shape[2]:
             raise ValueError("topology must have shape [time,node,node]")
-        self.topology = tf.constant(topo, dtype=tf.float32)
-        self.time_len = int(topo.shape[0])
+        self.topology = tf.constant(topo[0], dtype=tf.float32)
         self.node_count = int(topo.shape[1])
         self.node_dim = int(node_dim)
         self.gcn_dim = int(gcn_dim)
@@ -430,25 +434,26 @@ class DynamicGCNGraphToken(k.layers.Layer):
         )
 
     def _normalize_adjacency(self, adjacency):
-        batch = tf.shape(adjacency)[0]
-        eye = tf.eye(self.node_count, batch_shape=[batch], dtype=tf.float32)
+        eye = tf.eye(self.node_count, dtype=tf.float32)
         adjacency = adjacency + eye
         degree = tf.reduce_sum(adjacency, axis=-1)
         inv_sqrt = tf.math.rsqrt(tf.maximum(degree, 1e-6))
-        return adjacency * inv_sqrt[:, :, None] * inv_sqrt[:, None, :]
+        return adjacency * inv_sqrt[:, None] * inv_sqrt[None, :]
 
     def call(self, inputs, training=None):
         src_input, dst_input, time_input = inputs
         src = tf.cast(tf.reshape(src_input, [-1]), tf.int32)
         dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
-        time = tf.cast(tf.reshape(time_input, [-1]), tf.int32)
-        time = tf.clip_by_value(time, 0, self.time_len - 1)
+        batch_size = tf.shape(src)[0]
 
-        adjacency = tf.gather(self.topology, time)
-        adjacency = self._normalize_adjacency(adjacency)
+        adjacency = self._normalize_adjacency(self.topology)
+        adjacency = tf.broadcast_to(
+            adjacency[None, :, :],
+            [batch_size, self.node_count, self.node_count],
+        )
         node_ids = tf.range(self.node_count, dtype=tf.int32)
         x = self.node_embedding(node_ids)
-        x = tf.broadcast_to(x[None, :, :], [tf.shape(time)[0], self.node_count, self.node_dim])
+        x = tf.broadcast_to(x[None, :, :], [batch_size, self.node_count, self.node_dim])
 
         x1 = tf.matmul(adjacency, x)
         x1 = self.gcn_dense_1(x1)
@@ -462,7 +467,7 @@ class DynamicGCNGraphToken(k.layers.Layer):
         x2 = self.dropout(x2, training=training)
         h = self.gcn_norm_2(x1 + x2)
 
-        batch = tf.range(tf.shape(src)[0], dtype=tf.int32)
+        batch = tf.range(batch_size, dtype=tf.int32)
         h_i = tf.gather_nd(h, tf.stack([batch, src], axis=1))
         h_j = tf.gather_nd(h, tf.stack([batch, dst], axis=1))
         neighbor_context = tf.matmul(adjacency, h)
@@ -636,13 +641,13 @@ def create_gt_mst_model(
 
     graph_token = None
     if use_graph_token:
-        graph_token = DynamicGCNGraphToken(
+        graph_token = StaticGCNGraphToken(
             topology=topology,
             node_dim=node_dim,
             gcn_dim=gcn_dim,
             d_model=d_model,
             dropout=dropout,
-            name="dynamic_gcn_graph_token",
+            name="static_gcn_graph_token",
         )([src_input, dst_input, time_input])
         graph_context = graph_token
     else:
