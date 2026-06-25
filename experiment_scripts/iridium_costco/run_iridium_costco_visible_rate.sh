@@ -2,12 +2,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COSTCO_DIR="$SCRIPT_DIR/CostCO"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+COSTCO_DIR="$REPO_DIR/CostCO"
 cd "$COSTCO_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-TENSOR_PATH="${TENSOR_PATH:-$SCRIPT_DIR/data/iridium5400s/iridium.npy}"
+TENSOR_PATH="${TENSOR_PATH:-$REPO_DIR/data/iridium5400s/iridium.npy}"
 DATASET_NAME="${DATASET_NAME:-iridium5400s}"
+CONDA_ENV="${CONDA_ENV:-TZ-costco}"
 
 SEED="${SEED:-3}"
 RANK="${RANK:-50}"
@@ -33,6 +36,7 @@ if [[ "${1:-}" != "--foreground" ]]; then
     PYTHON_BIN="$PYTHON_BIN" \
     TENSOR_PATH="$TENSOR_PATH" \
     DATASET_NAME="$DATASET_NAME" \
+    CONDA_ENV="$CONDA_ENV" \
     SEED="$SEED" \
     RANK="$RANK" \
     NC="$NC" \
@@ -42,7 +46,7 @@ if [[ "${1:-}" != "--foreground" ]]; then
     TARGET_NORMALIZATION="$TARGET_NORMALIZATION" \
     VAL_RATIO="$VAL_RATIO" \
     VISIBLE_RATES="${VISIBLE_RATES[*]}" \
-    bash "$0" --foreground > "$master_log" 2>&1 &
+    bash "$SCRIPT_PATH" --foreground > "$master_log" 2>&1 &
   pid="$!"
   echo "$pid" > "$pid_file"
   echo "Started CoSTCo iridium visible-rate run in background."
@@ -57,6 +61,49 @@ export PYTHONHASHSEED="$SEED"
 export TF_DETERMINISTIC_OPS=1
 export TF_CUDNN_DETERMINISTIC=1
 export TF_ENABLE_ONEDNN_OPTS=0
+
+activate_conda_env() {
+  if [[ "${SKIP_CONDA_ACTIVATE:-0}" == "1" ]]; then
+    echo "Skipping conda activation because SKIP_CONDA_ACTIVATE=1"
+    return
+  fi
+
+  if [[ -n "${CONDA_EXE:-}" ]]; then
+    eval "$("$CONDA_EXE" shell.bash hook)"
+  elif command -v conda >/dev/null 2>&1; then
+    local conda_base
+    conda_base="$(conda info --base)"
+    # shellcheck disable=SC1090
+    source "$conda_base/etc/profile.d/conda.sh"
+  elif [[ -f "$HOME/.conda/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOME/.conda/etc/profile.d/conda.sh"
+  elif [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+  elif [[ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+  else
+    echo "Could not find conda.sh. Set SKIP_CONDA_ACTIVATE=1 if the environment is already active." >&2
+    exit 1
+  fi
+
+  conda activate "$CONDA_ENV"
+  CONDA_ENV_ACTIVATED=1
+  echo "Activated conda environment: $CONDA_ENV"
+}
+
+deactivate_conda_env() {
+  if [[ "${CONDA_ENV_ACTIVATED:-0}" == "1" ]]; then
+    conda deactivate || true
+    echo "Deactivated conda environment: $CONDA_ENV"
+  fi
+}
+
+trap deactivate_conda_env EXIT
+
+activate_conda_env
 
 require_file() {
   local path="$1"
@@ -88,6 +135,9 @@ require_file "$TENSOR_PATH"
 echo "===== CoSTCo Iridium Visible-Rate Experiments ====="
 echo "Start time: $(date)"
 echo "Work dir: $SCRIPT_DIR"
+echo "Repo dir: $REPO_DIR"
+echo "CoSTCo dir: $COSTCO_DIR"
+echo "Conda env: $CONDA_ENV"
 echo "Tensor: $TENSOR_PATH"
 echo "Dataset: $DATASET_NAME"
 echo "Seed: $SEED"
