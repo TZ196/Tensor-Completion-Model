@@ -234,10 +234,15 @@ class TextInjectionLayer(k.layers.Layer):
 
     def _aggregate_by_key(self, left, right, keys):
         if self.text_align_sample_size > 0:
-            limit = tf.minimum(tf.shape(keys)[0], self.text_align_sample_size)
-            left = left[:limit]
-            right = right[:limit]
-            keys = keys[:limit]
+            count = tf.shape(keys)[0]
+            limit = tf.minimum(count, self.text_align_sample_size)
+            sample_positions = tf.cast(
+                tf.linspace(0.0, tf.cast(count - 1, tf.float32), limit),
+                tf.int32,
+            )
+            left = tf.gather(left, sample_positions)
+            right = tf.gather(right, sample_positions)
+            keys = tf.gather(keys, sample_positions)
         unique_keys, segment_ids = tf.unique(keys)
         count = tf.shape(unique_keys)[0]
         left = tf.math.unsorted_segment_mean(left, segment_ids, count)
