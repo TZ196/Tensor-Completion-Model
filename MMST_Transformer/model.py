@@ -518,14 +518,69 @@ class TokenAssembly(k.layers.Layer):
         return x + roles[None, :, :]
 
 
+class GraphAttentionBias(k.layers.Layer):
+    """Map graph context to bounded additive Transformer attention bias.
+
+    Output shape is [B, heads, token_count, token_count]. The final projection
+    is zero-initialized, so enabling this layer starts from the old vanilla
+    attention behavior and learns graph priors during training.
+    """
+
+    def __init__(self, token_count=4, num_heads=4, hidden_dim=128, max_bias=2.0, **kwargs):
+        super().__init__(**kwargs)
+        self.token_count = int(token_count)
+        self.num_heads = int(num_heads)
+        self.hidden_dim = int(hidden_dim)
+        self.max_bias = float(max_bias)
+        self.hidden = k.Sequential(
+            [
+                k.layers.Dense(self.hidden_dim, activation="gelu"),
+                k.layers.LayerNormalization(),
+            ],
+            name="graph_attention_bias_hidden",
+        )
+        self.bias_projector = k.layers.Dense(
+            self.num_heads * self.token_count * self.token_count,
+            kernel_initializer="zeros",
+            bias_initializer="zeros",
+            name="graph_attention_bias_projector",
+        )
+
+    def call(self, graph_context):
+        hidden = self.hidden(graph_context)
+        bias = tf.tanh(self.bias_projector(hidden)) * self.max_bias
+        return tf.reshape(
+            bias,
+            [
+                tf.shape(graph_context)[0],
+                self.num_heads,
+                self.token_count,
+                self.token_count,
+            ],
+        )
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "token_count": self.token_count,
+            "num_heads": self.num_heads,
+            "hidden_dim": self.hidden_dim,
+            "max_bias": self.max_bias,
+        })
+        return config
+
+
 class TransformerEncoderBlock(k.layers.Layer):
     def __init__(self, d_model=64, num_heads=4, ff_dim=128, dropout=0.1, **kwargs):
         super().__init__(**kwargs)
-        self.attention = k.layers.MultiHeadAttention(
-            num_heads=num_heads,
-            key_dim=max(1, d_model // num_heads),
-            dropout=dropout,
-        )
+        self.d_model = int(d_model)
+        self.num_heads = int(num_heads)
+        self.key_dim = max(1, self.d_model // self.num_heads)
+        self.query_dense = k.layers.Dense(self.num_heads * self.key_dim, name="query")
+        self.key_dense = k.layers.Dense(self.num_heads * self.key_dim, name="key")
+        self.value_dense = k.layers.Dense(self.num_heads * self.key_dim, name="value")
+        self.attention_output = k.layers.Dense(self.d_model, name="attention_output")
+        self.attention_dropout = k.layers.Dropout(dropout)
         self.dropout_1 = k.layers.Dropout(dropout)
         self.norm_1 = k.layers.LayerNormalization()
         self.ffn = k.Sequential(
@@ -538,8 +593,26 @@ class TransformerEncoderBlock(k.layers.Layer):
         self.dropout_2 = k.layers.Dropout(dropout)
         self.norm_2 = k.layers.LayerNormalization()
 
-    def call(self, x, training=None):
-        attn = self.attention(x, x, training=training)
+    def _split_heads(self, x):
+        x = tf.reshape(x, [tf.shape(x)[0], tf.shape(x)[1], self.num_heads, self.key_dim])
+        return tf.transpose(x, [0, 2, 1, 3])
+
+    def _merge_heads(self, x):
+        x = tf.transpose(x, [0, 2, 1, 3])
+        return tf.reshape(x, [tf.shape(x)[0], tf.shape(x)[1], self.num_heads * self.key_dim])
+
+    def call(self, x, attention_bias=None, training=None):
+        query = self._split_heads(self.query_dense(x))
+        key = self._split_heads(self.key_dense(x))
+        value = self._split_heads(self.value_dense(x))
+        scale = tf.math.rsqrt(tf.cast(self.key_dim, tf.float32))
+        scores = tf.matmul(query, key, transpose_b=True) * scale
+        if attention_bias is not None:
+            scores = scores + attention_bias
+        weights = tf.nn.softmax(scores, axis=-1)
+        weights = self.attention_dropout(weights, training=training)
+        attn = tf.matmul(weights, value)
+        attn = self.attention_output(self._merge_heads(attn))
         x = self.norm_1(x + self.dropout_1(attn, training=training))
         ffn = self.ffn(x, training=training)
         return self.norm_2(x + self.dropout_2(ffn, training=training))
@@ -559,9 +632,9 @@ class TransformerEncoderStack(k.layers.Layer):
             for idx in range(int(num_layers))
         ]
 
-    def call(self, x, training=None):
+    def call(self, x, attention_bias=None, training=None):
         for block in self.blocks:
-            x = block(x, training=training)
+            x = block(x, attention_bias=attention_bias, training=training)
         return x
 
 
@@ -622,6 +695,8 @@ def create_gt_mst_model(
     alignment_temperature=0.2,
     temporal_delta=2,
     text_target_start=0,
+    use_graph_attention_bias=True,
+    max_graph_attention_bias=2.0,
     output_bias_init=0.0,
 ):
     """Create GT-MST.
@@ -706,6 +781,15 @@ def create_gt_mst_model(
             d_model=d_model,
             name="token_assembly",
         )(tokens)
+        attention_bias = None
+        if use_graph_token and use_graph_attention_bias and graph_token is not None:
+            attention_bias = GraphAttentionBias(
+                token_count=len(tokens),
+                num_heads=num_heads,
+                hidden_dim=ff_dim,
+                max_bias=max_graph_attention_bias,
+                name="graph_attention_bias",
+            )(graph_token)
         token_tensor = TransformerEncoderStack(
             num_layers=transformer_layers,
             d_model=d_model,
@@ -713,7 +797,7 @@ def create_gt_mst_model(
             ff_dim=ff_dim,
             dropout=dropout,
             name="transformer_encoder",
-        )(token_tensor)
+        )(token_tensor, attention_bias=attention_bias)
         x = TokenPooling(
             token_count=len(tokens),
             d_model=d_model,

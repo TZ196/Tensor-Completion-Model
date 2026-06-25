@@ -377,6 +377,8 @@ def parse_args():
     parser.add_argument("--text-align-target-ratio", type=float, default=0.01)
     parser.add_argument("--alignment-temperature", type=float, default=0.2)
     parser.add_argument("--temporal-delta", type=int, default=2)
+    parser.add_argument("--disable-graph-attention-bias", action="store_true")
+    parser.add_argument("--max-graph-attention-bias", type=float, default=2.0)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -483,6 +485,8 @@ def main():
         alignment_temperature=args.alignment_temperature,
         temporal_delta=args.temporal_delta,
         text_target_start=text_target_start,
+        use_graph_attention_bias=not args.disable_graph_attention_bias,
+        max_graph_attention_bias=args.max_graph_attention_bias,
         output_bias_init=output_bias_init,
     )
     model.compile(k.optimizers.Adam(learning_rate=args.lr), loss="mse", metrics=["mae"])
@@ -524,6 +528,7 @@ def main():
     print("d_model:", args.d_model)
     print("use_transformer:", cfg["use_transformer"])
     print("use_graph_token:", cfg["use_graph_token"])
+    print("use_graph_attention_bias:", bool(cfg["use_graph_token"] and not args.disable_graph_attention_bias))
     print("use_mode_text:", cfg["use_mode_text"])
     print("text_mode:", cfg["text_mode"])
     print("text_align_target_ratio:", args.text_align_target_ratio if alignment_enabled else 0.0)
@@ -573,4 +578,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
