@@ -377,6 +377,8 @@ def parse_args():
     parser.add_argument("--text-align-target-ratio", type=float, default=0.01)
     parser.add_argument("--alignment-temperature", type=float, default=0.2)
     parser.add_argument("--temporal-delta", type=int, default=2)
+    parser.add_argument("--text-align-sample-size", type=int, default=0)
+    parser.add_argument("--disable-text-metrics", action="store_true")
     parser.add_argument("--disable-graph-attention-bias", action="store_true")
     parser.add_argument("--max-graph-attention-bias", type=float, default=2.0)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -484,6 +486,8 @@ def main():
         text_align_target_ratio=args.text_align_target_ratio if alignment_enabled else 0.0,
         alignment_temperature=args.alignment_temperature,
         temporal_delta=args.temporal_delta,
+        text_align_sample_size=args.text_align_sample_size,
+        emit_text_metrics=not args.disable_text_metrics,
         text_target_start=text_target_start,
         use_graph_attention_bias=not args.disable_graph_attention_bias,
         max_graph_attention_bias=args.max_graph_attention_bias,
@@ -532,6 +536,8 @@ def main():
     print("use_mode_text:", cfg["use_mode_text"])
     print("text_mode:", cfg["text_mode"])
     print("text_align_target_ratio:", args.text_align_target_ratio if alignment_enabled else 0.0)
+    print("text_align_sample_size:", args.text_align_sample_size)
+    print("emit_text_metrics:", not args.disable_text_metrics)
     print("Train/val/test entries:", train_indices.shape[0], val_indices.shape[0], test_indices.shape[0])
 
     history = model.fit(

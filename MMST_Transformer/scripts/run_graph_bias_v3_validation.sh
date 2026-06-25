@@ -22,13 +22,15 @@ FF_DIM="${FF_DIM:-128}"
 DROPOUT="${DROPOUT:-0.1}"
 LR="${LR:-1e-3}"
 EPOCHS="${EPOCHS:-200}"
-BATCH_SIZE="${BATCH_SIZE:-256}"
+BATCH_SIZE="${BATCH_SIZE:-1024}"
 TARGET_NORMALIZATION="${TARGET_NORMALIZATION:-max}"
 TEXT_ALIGN_TARGET_RATIO="${TEXT_ALIGN_TARGET_RATIO:-0.01}"
 ALIGNMENT_TEMPERATURE="${ALIGNMENT_TEMPERATURE:-0.2}"
 TEMPORAL_DELTA="${TEMPORAL_DELTA:-2}"
 EARLY_STOPPING_PATIENCE="${EARLY_STOPPING_PATIENCE:-20}"
 MAX_GRAPH_ATTENTION_BIAS="${MAX_GRAPH_ATTENTION_BIAS:-2.0}"
+TEXT_ALIGN_SAMPLE_SIZE="${TEXT_ALIGN_SAMPLE_SIZE:-128}"
+DISABLE_TEXT_METRICS="${DISABLE_TEXT_METRICS:-1}"
 
 VISIBLE_RATES_RAW="${VISIBLE_RATES:-7 10 20}"
 VARIANTS_RAW="${VARIANTS:-M2 M3 M4 M5 M6}"
@@ -65,6 +67,8 @@ if [[ "${1:-}" != "--foreground" ]]; then
     TEMPORAL_DELTA="$TEMPORAL_DELTA" \
     EARLY_STOPPING_PATIENCE="$EARLY_STOPPING_PATIENCE" \
     MAX_GRAPH_ATTENTION_BIAS="$MAX_GRAPH_ATTENTION_BIAS" \
+    TEXT_ALIGN_SAMPLE_SIZE="$TEXT_ALIGN_SAMPLE_SIZE" \
+    DISABLE_TEXT_METRICS="$DISABLE_TEXT_METRICS" \
     VISIBLE_RATES="$VISIBLE_RATES_RAW" \
     VARIANTS="$VARIANTS_RAW" \
     bash "$SCRIPT_PATH" --foreground > "$master_log" 2>&1 &
@@ -167,7 +171,10 @@ echo "Seed: $SEED"
 echo "Visible rates: ${VISIBLE_RATES[*]}"
 echo "Variants: ${VARIANTS[*]}"
 echo "Max graph attention bias: $MAX_GRAPH_ATTENTION_BIAS"
+echo "Text align sample size: $TEXT_ALIGN_SAMPLE_SIZE"
+echo "Disable auxiliary text metrics: $DISABLE_TEXT_METRICS"
 echo "Epochs: $EPOCHS"
+echo "Batch size: $BATCH_SIZE"
 echo "Early stopping patience: $EARLY_STOPPING_PATIENCE"
 echo
 
@@ -192,7 +199,12 @@ common_args=(
   --temporal-delta "$TEMPORAL_DELTA"
   --early-stopping-patience "$EARLY_STOPPING_PATIENCE"
   --max-graph-attention-bias "$MAX_GRAPH_ATTENTION_BIAS"
+  --text-align-sample-size "$TEXT_ALIGN_SAMPLE_SIZE"
 )
+
+if [[ "$DISABLE_TEXT_METRICS" == "1" ]]; then
+  common_args+=(--disable-text-metrics)
+fi
 
 for rate in "${VISIBLE_RATES[@]}"; do
   ratio="$(rate_ratio "$rate")"

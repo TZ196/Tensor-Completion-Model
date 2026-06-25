@@ -22,6 +22,8 @@ class TextInjectionLayer(k.layers.Layer):
         text_align_target_ratio=0.0,
         alignment_temperature=0.2,
         temporal_delta=2,
+        text_align_sample_size=0,
+        emit_text_metrics=True,
         target_start=0,
         **kwargs,
     ):
@@ -54,6 +56,8 @@ class TextInjectionLayer(k.layers.Layer):
         self.initial_text_align_weight = 1e-5 if self.text_align_enabled else 0.0
         self.alignment_temperature = float(alignment_temperature)
         self.temporal_delta = int(temporal_delta)
+        self.text_align_sample_size = int(text_align_sample_size)
+        self.emit_text_metrics = bool(emit_text_metrics)
         self.target_start = int(target_start)
 
         self.source_text_embeddings = tf.constant(source, dtype=tf.float32)
@@ -179,11 +183,12 @@ class TextInjectionLayer(k.layers.Layer):
         text_time_raw = time - self.target_start
         text_time = tf.clip_by_value(text_time_raw, 0, self.text_time_len - 1)
         clipped = tf.not_equal(text_time_raw, text_time)
-        self.add_metric(
-            tf.reduce_mean(tf.cast(clipped, tf.float32)),
-            name="text_time_clipped_ratio",
-            aggregation="mean",
-        )
+        if self.emit_text_metrics:
+            self.add_metric(
+                tf.reduce_mean(tf.cast(clipped, tf.float32)),
+                name="text_time_clipped_ratio",
+                aggregation="mean",
+            )
 
         source_text, destination_text = self._lookup_source_destination(
             src,
@@ -228,6 +233,11 @@ class TextInjectionLayer(k.layers.Layer):
         return 0.5 * (tf.reduce_mean(loss_a) + tf.reduce_mean(loss_b))
 
     def _aggregate_by_key(self, left, right, keys):
+        if self.text_align_sample_size > 0:
+            limit = tf.minimum(tf.shape(keys)[0], self.text_align_sample_size)
+            left = left[:limit]
+            right = right[:limit]
+            keys = keys[:limit]
         unique_keys, segment_ids = tf.unique(keys)
         count = tf.shape(unique_keys)[0]
         left = tf.math.unsorted_segment_mean(left, segment_ids, count)
@@ -359,13 +369,14 @@ class TextInjectionLayer(k.layers.Layer):
             time_token + time_alpha * time_gate * time_numeric_gate * time_proj
         )
 
-        self.add_metric(tf.reduce_mean(source_alpha), name="source_text_alpha", aggregation="mean")
-        self.add_metric(
-            tf.reduce_mean(destination_alpha),
-            name="destination_text_alpha",
-            aggregation="mean",
-        )
-        self.add_metric(tf.reduce_mean(time_alpha), name="time_text_alpha", aggregation="mean")
+        if self.emit_text_metrics:
+            self.add_metric(tf.reduce_mean(source_alpha), name="source_text_alpha", aggregation="mean")
+            self.add_metric(
+                tf.reduce_mean(destination_alpha),
+                name="destination_text_alpha",
+                aggregation="mean",
+            )
+            self.add_metric(tf.reduce_mean(time_alpha), name="time_text_alpha", aggregation="mean")
 
         if self.static_source_destination_text:
             source_keys = src
@@ -694,6 +705,8 @@ def create_gt_mst_model(
     text_align_target_ratio=0.0,
     alignment_temperature=0.2,
     temporal_delta=2,
+    text_align_sample_size=0,
+    emit_text_metrics=True,
     text_target_start=0,
     use_graph_attention_bias=True,
     max_graph_attention_bias=2.0,
@@ -759,6 +772,8 @@ def create_gt_mst_model(
             text_align_target_ratio=text_align_target_ratio,
             alignment_temperature=alignment_temperature,
             temporal_delta=temporal_delta,
+            text_align_sample_size=text_align_sample_size,
+            emit_text_metrics=emit_text_metrics,
             target_start=text_target_start,
             name="text_injection",
         )([
