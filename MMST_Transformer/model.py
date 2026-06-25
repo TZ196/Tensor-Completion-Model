@@ -410,8 +410,15 @@ class StaticGCNGraphToken(k.layers.Layer):
         topo = np.asarray(topology, dtype="float32")
         if topo.ndim != 3 or topo.shape[1] != topo.shape[2]:
             raise ValueError("topology must have shape [time,node,node]")
-        self.topology = tf.constant(topo[0], dtype=tf.float32)
+        topo_static = (topo[0] > 0).astype("float32")
         self.node_count = int(topo.shape[1])
+        adjacency_with_self = topo_static + np.eye(self.node_count, dtype="float32")
+        degree = np.sum(adjacency_with_self, axis=-1)
+        inv_sqrt = 1.0 / np.sqrt(np.maximum(degree, 1e-6))
+        normalized = adjacency_with_self * inv_sqrt[:, None] * inv_sqrt[None, :]
+        attention_mask = adjacency_with_self > 0
+        self.normalized_topology = tf.constant(normalized, dtype=tf.float32)
+        self.attention_mask = tf.constant(attention_mask, dtype=tf.bool)
         self.node_dim = int(node_dim)
         self.gcn_dim = int(gcn_dim)
         self.d_model = int(d_model)
@@ -423,6 +430,10 @@ class StaticGCNGraphToken(k.layers.Layer):
         self.gcn_dense_2 = k.layers.Dense(gcn_dim, name="gcn_dense_2")
         self.gcn_norm_2 = k.layers.LayerNormalization(name="gcn_norm_2")
         self.dropout = k.layers.Dropout(dropout)
+        self.attention_query = k.layers.Dense(gcn_dim, name="graph_context_query")
+        self.attention_key = k.layers.Dense(gcn_dim, name="graph_context_key")
+        self.attention_value = k.layers.Dense(gcn_dim, name="graph_context_value")
+        self.attention_norm = k.layers.LayerNormalization(name="graph_attention_context_norm")
         self.graph_projector = k.Sequential(
             [
                 k.layers.Dense(gcn_dim, activation="gelu"),
@@ -433,27 +444,29 @@ class StaticGCNGraphToken(k.layers.Layer):
             name="graph_token_projector",
         )
 
-    def _normalize_adjacency(self, adjacency):
-        eye = tf.eye(self.node_count, dtype=tf.float32)
-        adjacency = adjacency + eye
-        degree = tf.reduce_sum(adjacency, axis=-1)
-        inv_sqrt = tf.math.rsqrt(tf.maximum(degree, 1e-6))
-        return adjacency * inv_sqrt[:, None] * inv_sqrt[None, :]
+    def _attention_context(self, h):
+        query = self.attention_query(h)
+        key = self.attention_key(h)
+        value = self.attention_value(h)
+        scale = tf.math.rsqrt(tf.cast(tf.shape(key)[-1], tf.float32))
+        scores = tf.matmul(query, key, transpose_b=True) * scale
+        scores = tf.where(
+            self.attention_mask,
+            scores,
+            tf.ones_like(scores) * -1e9,
+        )
+        weights = tf.nn.softmax(scores, axis=-1)
+        context = tf.matmul(weights, value)
+        return self.attention_norm(h + context)
 
     def call(self, inputs, training=None):
         src_input, dst_input, time_input = inputs
         src = tf.cast(tf.reshape(src_input, [-1]), tf.int32)
         dst = tf.cast(tf.reshape(dst_input, [-1]), tf.int32)
-        batch_size = tf.shape(src)[0]
 
-        adjacency = self._normalize_adjacency(self.topology)
-        adjacency = tf.broadcast_to(
-            adjacency[None, :, :],
-            [batch_size, self.node_count, self.node_count],
-        )
+        adjacency = self.normalized_topology
         node_ids = tf.range(self.node_count, dtype=tf.int32)
         x = self.node_embedding(node_ids)
-        x = tf.broadcast_to(x[None, :, :], [batch_size, self.node_count, self.node_dim])
 
         x1 = tf.matmul(adjacency, x)
         x1 = self.gcn_dense_1(x1)
@@ -467,12 +480,11 @@ class StaticGCNGraphToken(k.layers.Layer):
         x2 = self.dropout(x2, training=training)
         h = self.gcn_norm_2(x1 + x2)
 
-        batch = tf.range(batch_size, dtype=tf.int32)
-        h_i = tf.gather_nd(h, tf.stack([batch, src], axis=1))
-        h_j = tf.gather_nd(h, tf.stack([batch, dst], axis=1))
-        neighbor_context = tf.matmul(adjacency, h)
-        context_i = tf.gather_nd(neighbor_context, tf.stack([batch, src], axis=1))
-        context_j = tf.gather_nd(neighbor_context, tf.stack([batch, dst], axis=1))
+        attention_context = self._attention_context(h)
+        h_i = tf.gather(h, src)
+        h_j = tf.gather(h, dst)
+        context_i = tf.gather(attention_context, src)
+        context_j = tf.gather(attention_context, dst)
         pair = tf.concat(
             [
                 h_i,
