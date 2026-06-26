@@ -33,10 +33,15 @@ def build_mask(shape, indices):
 
 
 def make_time_chunks(time_count, chunk_len):
+    if int(time_count) % int(chunk_len) != 0:
+        raise ValueError(
+            "time_count=%d must be divisible by --chunk-len=%d for fixed-shape dense training"
+            % (int(time_count), int(chunk_len))
+        )
     chunks = []
     for start in range(0, int(time_count), int(chunk_len)):
         chunks.append(np.arange(start, min(start + int(chunk_len), int(time_count)), dtype="int32"))
-    return chunks
+    return np.asarray(chunks, dtype="int32")
 
 
 def masked_chunk_loss(model, target_tensor, mask_tensor, time_ids, training):
@@ -54,10 +59,50 @@ def masked_chunk_loss(model, target_tensor, mask_tensor, time_ids, training):
     return total_loss, pred_loss, count
 
 
-def predict_full_tensor(model, shape, chunks):
+def make_compiled_steps(model, optimizer, target_tensor, train_mask_tensor, val_mask_tensor, chunk_len):
+    input_signature = [tf.TensorSpec(shape=(chunk_len,), dtype=tf.int32)]
+
+    @tf.function(input_signature=input_signature, reduce_retracing=True)
+    def train_step(time_ids):
+        with tf.GradientTape() as tape:
+            loss, pred_loss, count = masked_chunk_loss(
+                model,
+                target_tensor,
+                train_mask_tensor,
+                time_ids,
+                training=True,
+            )
+        grads = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(
+            [(grad, var) for grad, var in zip(grads, model.trainable_variables) if grad is not None]
+        )
+        return loss, pred_loss, count
+
+    @tf.function(input_signature=input_signature, reduce_retracing=True)
+    def val_step(time_ids):
+        return masked_chunk_loss(
+            model,
+            target_tensor,
+            val_mask_tensor,
+            time_ids,
+            training=False,
+        )
+
+    @tf.function(input_signature=input_signature, reduce_retracing=True)
+    def predict_step(time_ids):
+        return model(time_ids[None, :], training=False)[0]
+
+    return train_step, val_step, predict_step
+
+
+def predict_full_tensor(model, shape, chunks, predict_step=None):
     pred = np.zeros(shape, dtype="float32")
     for time_ids in chunks:
-        out = model(tf.constant(time_ids[None, :], dtype=tf.int32), training=False).numpy()[0]
+        time_tensor = tf.constant(time_ids, dtype=tf.int32)
+        if predict_step is None:
+            out = model(time_tensor[None, :], training=False).numpy()[0]
+        else:
+            out = predict_step(time_tensor).numpy()
         pred[:, :, time_ids] = out
     return pred
 
@@ -214,6 +259,14 @@ def main():
 
     # Build variables before checkpointing.
     _ = model(tf.constant(chunks[0][None, :], dtype=tf.int32), training=False)
+    train_step, val_step, predict_step = make_compiled_steps(
+        model,
+        optimizer,
+        target_tensor,
+        train_mask_tensor,
+        val_mask_tensor,
+        int(args.chunk_len),
+    )
     os.makedirs(os.path.dirname(args.checkpoint_path), exist_ok=True)
 
     rng = random.Random(args.seed)
@@ -242,16 +295,7 @@ def main():
             time_ids = chunks[idx]
             if np.sum(train_mask[:, :, time_ids]) <= 0.0:
                 continue
-            with tf.GradientTape() as tape:
-                loss, pred_loss, _count = masked_chunk_loss(
-                    model,
-                    target_tensor,
-                    train_mask_tensor,
-                    time_ids,
-                    training=True,
-                )
-            grads = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients((g, v) for g, v in zip(grads, model.trainable_variables) if g is not None)
+            loss, pred_loss, _count = train_step(tf.constant(time_ids, dtype=tf.int32))
             total_loss += float(loss.numpy())
             total_pred_loss += float(pred_loss.numpy())
             used += 1
@@ -262,17 +306,11 @@ def main():
         for time_ids in chunks:
             if np.sum(val_mask[:, :, time_ids]) <= 0.0:
                 continue
-            val_loss, _pred_loss, _count = masked_chunk_loss(
-                model,
-                target_tensor,
-                val_mask_tensor,
-                time_ids,
-                training=False,
-            )
+            val_loss, _pred_loss, _count = val_step(tf.constant(time_ids, dtype=tf.int32))
             val_losses.append(float(val_loss.numpy()))
         val_loss = float(np.mean(val_losses)) if val_losses else 0.0
 
-        pred_norm = predict_full_tensor(model, shape, chunks)
+        pred_norm = predict_full_tensor(model, shape, chunks, predict_step=predict_step)
         val_metrics = evaluate_predictions(pred_norm, val_indices, val_values, target_scale)
         val_mae = val_metrics["mae"]
 
@@ -300,7 +338,7 @@ def main():
 
     if os.path.exists(args.checkpoint_path):
         model.load_weights(args.checkpoint_path)
-    pred_norm = predict_full_tensor(model, shape, chunks)
+    pred_norm = predict_full_tensor(model, shape, chunks, predict_step=predict_step)
     train_metrics = evaluate_predictions(pred_norm, train_indices, train_values, target_scale)
     val_metrics = evaluate_predictions(pred_norm, val_indices, val_values, target_scale)
     test_metrics = evaluate_predictions(pred_norm, test_indices, test_values, target_scale)
