@@ -45,7 +45,7 @@ def make_time_chunks(time_count, chunk_len):
 
 
 def masked_chunk_loss(model, target_tensor, mask_tensor, time_ids, training):
-    pred = model(tf.constant(time_ids[None, :], dtype=tf.int32), training=training)[0]
+    pred = model(tf.expand_dims(tf.cast(time_ids, tf.int32), axis=0), training=training)[0]
     y_true = tf.gather(target_tensor, time_ids, axis=2)
     mask = tf.gather(mask_tensor, time_ids, axis=2)
     count = tf.reduce_sum(mask)
