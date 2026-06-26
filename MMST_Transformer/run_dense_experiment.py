@@ -44,10 +44,19 @@ def make_time_chunks(time_count, chunk_len):
     return np.asarray(chunks, dtype="int32")
 
 
-def masked_chunk_loss(model, target_tensor, mask_tensor, time_ids, training):
-    pred = model(tf.expand_dims(tf.cast(time_ids, tf.int32), axis=0), training=training)[0]
-    y_true = tf.gather(target_tensor, time_ids, axis=2)
-    mask = tf.gather(mask_tensor, time_ids, axis=2)
+def gather_block(tensor, source_ids, destination_ids, time_ids):
+    block = tf.gather(tensor, source_ids, axis=0)
+    block = tf.gather(block, destination_ids, axis=1)
+    return tf.gather(block, time_ids, axis=2)
+
+
+def masked_block_loss(model, target_tensor, mask_tensor, source_ids, destination_ids, time_ids, training):
+    source_ids = tf.cast(source_ids, tf.int32)
+    destination_ids = tf.cast(destination_ids, tf.int32)
+    time_ids = tf.cast(time_ids, tf.int32)
+    pred = model([source_ids[None, :], destination_ids[None, :], time_ids[None, :]], training=training)[0]
+    y_true = gather_block(target_tensor, source_ids, destination_ids, time_ids)
+    mask = gather_block(mask_tensor, source_ids, destination_ids, time_ids)
     count = tf.reduce_sum(mask)
     sq = tf.square(pred - y_true) * mask
     pred_loss = tf.cond(
@@ -60,15 +69,26 @@ def masked_chunk_loss(model, target_tensor, mask_tensor, time_ids, training):
 
 
 def make_compiled_steps(model, optimizer, target_tensor, train_mask_tensor, val_mask_tensor, chunk_len):
-    input_signature = [tf.TensorSpec(shape=(chunk_len,), dtype=tf.int32)]
+    train_signature = [
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
+        tf.TensorSpec(shape=(chunk_len,), dtype=tf.int32),
+    ]
+    predict_signature = [
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
+        tf.TensorSpec(shape=(chunk_len,), dtype=tf.int32),
+    ]
 
-    @tf.function(input_signature=input_signature, reduce_retracing=True)
-    def train_step(time_ids):
+    @tf.function(input_signature=train_signature, reduce_retracing=True)
+    def train_step(source_ids, destination_ids, time_ids):
         with tf.GradientTape() as tape:
-            loss, pred_loss, count = masked_chunk_loss(
+            loss, pred_loss, count = masked_block_loss(
                 model,
                 target_tensor,
                 train_mask_tensor,
+                source_ids,
+                destination_ids,
                 time_ids,
                 training=True,
             )
@@ -78,33 +98,43 @@ def make_compiled_steps(model, optimizer, target_tensor, train_mask_tensor, val_
         )
         return loss, pred_loss, count
 
-    @tf.function(input_signature=input_signature, reduce_retracing=True)
-    def val_step(time_ids):
-        return masked_chunk_loss(
+    @tf.function(input_signature=train_signature, reduce_retracing=True)
+    def val_step(source_ids, destination_ids, time_ids):
+        return masked_block_loss(
             model,
             target_tensor,
             val_mask_tensor,
+            source_ids,
+            destination_ids,
             time_ids,
             training=False,
         )
 
-    @tf.function(input_signature=input_signature, reduce_retracing=True)
-    def predict_step(time_ids):
-        return model(time_ids[None, :], training=False)[0]
+    @tf.function(input_signature=predict_signature, reduce_retracing=True)
+    def predict_step(source_ids, destination_ids, time_ids):
+        return model([source_ids[None, :], destination_ids[None, :], time_ids[None, :]], training=False)[0]
 
     return train_step, val_step, predict_step
 
 
 def predict_full_tensor(model, shape, chunks, predict_step=None):
     pred = np.zeros(shape, dtype="float32")
+    source_ids = tf.range(shape[0], dtype=tf.int32)
+    destination_ids = tf.range(shape[1], dtype=tf.int32)
     for time_ids in chunks:
         time_tensor = tf.constant(time_ids, dtype=tf.int32)
         if predict_step is None:
-            out = model(time_tensor[None, :], training=False).numpy()[0]
+            out = model([source_ids[None, :], destination_ids[None, :], time_tensor[None, :]], training=False).numpy()[0]
         else:
-            out = predict_step(time_tensor).numpy()
+            out = predict_step(source_ids, destination_ids, time_tensor).numpy()
         pred[:, :, time_ids] = out
     return pred
+
+
+def sample_ids(rng, count, block_size):
+    if block_size <= 0 or block_size >= count:
+        return np.arange(count, dtype="int32")
+    return np.asarray(sorted(rng.sample(range(count), block_size)), dtype="int32")
 
 
 def evaluate_predictions(pred_norm, indices, values, target_scale):
@@ -144,6 +174,9 @@ def parse_args():
     parser.add_argument("--variant", choices=["M7_dense", "M8_dense", "M9_dense"], default="M8_dense")
     parser.add_argument("--mode-text-dir", default="../CostCO/mode_text_numeric_ablation_data/both")
     parser.add_argument("--chunk-len", type=int, default=4)
+    parser.add_argument("--source-block-size", type=int, default=32)
+    parser.add_argument("--destination-block-size", type=int, default=32)
+    parser.add_argument("--steps-per-epoch", type=int, default=120)
     parser.add_argument("--d-model", type=int, default=64)
     parser.add_argument("--node-dim", type=int, default=64)
     parser.add_argument("--gcn-dim", type=int, default=128)
@@ -258,7 +291,16 @@ def main():
     val_mask_tensor = tf.constant(val_mask, dtype=tf.float32)
 
     # Build variables before checkpointing.
-    _ = model(tf.constant(chunks[0][None, :], dtype=tf.int32), training=False)
+    full_source_ids = np.arange(shape[0], dtype="int32")
+    full_destination_ids = np.arange(shape[1], dtype="int32")
+    _ = model(
+        [
+            tf.constant(full_source_ids[None, :], dtype=tf.int32),
+            tf.constant(full_destination_ids[None, :], dtype=tf.int32),
+            tf.constant(chunks[0][None, :], dtype=tf.int32),
+        ],
+        training=False,
+    )
     train_step, val_step, predict_step = make_compiled_steps(
         model,
         optimizer,
@@ -281,21 +323,37 @@ def main():
     print("Observed ratio:", args.observed_ratio)
     print("Chunk length:", args.chunk_len)
     print("Chunks:", len(chunks))
+    print("Source/destination block:", args.source_block_size, args.destination_block_size)
+    print("Steps per epoch:", args.steps_per_epoch)
     print("Metrics path:", args.metrics_path)
     print("Train/val/test entries:", train_indices.shape[0], val_indices.shape[0], test_indices.shape[0])
 
     for epoch in range(1, args.epochs + 1):
-        order = list(range(len(chunks)))
-        if args.shuffle_chunks:
-            rng.shuffle(order)
         total_loss = 0.0
         total_pred_loss = 0.0
         used = 0
-        for idx in order:
+        steps = int(args.steps_per_epoch) if int(args.steps_per_epoch) > 0 else len(chunks)
+        for step in range(steps):
+            if args.shuffle_chunks:
+                idx = rng.randrange(len(chunks))
+            else:
+                idx = step % len(chunks)
             time_ids = chunks[idx]
-            if np.sum(train_mask[:, :, time_ids]) <= 0.0:
+            source_ids = sample_ids(rng, shape[0], int(args.source_block_size))
+            destination_ids = sample_ids(rng, shape[1], int(args.destination_block_size))
+            # Avoid zero-observation training steps in very sparse settings.
+            for _retry in range(20):
+                if np.sum(train_mask[np.ix_(source_ids, destination_ids, time_ids)]) > 0.0:
+                    break
+                source_ids = sample_ids(rng, shape[0], int(args.source_block_size))
+                destination_ids = sample_ids(rng, shape[1], int(args.destination_block_size))
+            if np.sum(train_mask[np.ix_(source_ids, destination_ids, time_ids)]) <= 0.0:
                 continue
-            loss, pred_loss, _count = train_step(tf.constant(time_ids, dtype=tf.int32))
+            loss, pred_loss, _count = train_step(
+                tf.constant(source_ids, dtype=tf.int32),
+                tf.constant(destination_ids, dtype=tf.int32),
+                tf.constant(time_ids, dtype=tf.int32),
+            )
             total_loss += float(loss.numpy())
             total_pred_loss += float(pred_loss.numpy())
             used += 1
@@ -303,10 +361,16 @@ def main():
         train_pred_loss = total_pred_loss / max(used, 1)
 
         val_losses = []
+        full_source_tensor = tf.constant(full_source_ids, dtype=tf.int32)
+        full_destination_tensor = tf.constant(full_destination_ids, dtype=tf.int32)
         for time_ids in chunks:
             if np.sum(val_mask[:, :, time_ids]) <= 0.0:
                 continue
-            val_loss, _pred_loss, _count = val_step(tf.constant(time_ids, dtype=tf.int32))
+            val_loss, _pred_loss, _count = val_step(
+                full_source_tensor,
+                full_destination_tensor,
+                tf.constant(time_ids, dtype=tf.int32),
+            )
             val_losses.append(float(val_loss.numpy()))
         val_loss = float(np.mean(val_losses)) if val_losses else 0.0
 

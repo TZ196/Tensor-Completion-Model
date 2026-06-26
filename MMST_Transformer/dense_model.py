@@ -69,6 +69,13 @@ class DenseStaticGraphContext(k.layers.Layer):
         return self.attention_norm(h + context)
 
     def call(self, inputs=None, training=None):
+        if isinstance(inputs, (list, tuple)) and len(inputs) >= 2:
+            src_ids = tf.cast(tf.reshape(inputs[0], [-1]), tf.int32)
+            dst_ids = tf.cast(tf.reshape(inputs[1], [-1]), tf.int32)
+        else:
+            src_ids = tf.range(self.node_count, dtype=tf.int32)
+            dst_ids = tf.range(self.node_count, dtype=tf.int32)
+
         node_ids = tf.range(self.node_count, dtype=tf.int32)
         x = self.node_embedding(node_ids)
         adjacency = self.normalized_topology
@@ -86,10 +93,16 @@ class DenseStaticGraphContext(k.layers.Layer):
         h = self.gcn_norm_2(x1 + x2)
 
         context = self._node_context(h)
-        h_i = tf.tile(h[:, None, :], [1, self.node_count, 1])
-        h_j = tf.tile(h[None, :, :], [self.node_count, 1, 1])
-        context_i = tf.tile(context[:, None, :], [1, self.node_count, 1])
-        context_j = tf.tile(context[None, :, :], [self.node_count, 1, 1])
+        h_src = tf.gather(h, src_ids)
+        h_dst = tf.gather(h, dst_ids)
+        context_src = tf.gather(context, src_ids)
+        context_dst = tf.gather(context, dst_ids)
+        src_count = tf.shape(src_ids)[0]
+        dst_count = tf.shape(dst_ids)[0]
+        h_i = tf.tile(h_src[:, None, :], [1, dst_count, 1])
+        h_j = tf.tile(h_dst[None, :, :], [src_count, 1, 1])
+        context_i = tf.tile(context_src[:, None, :], [1, dst_count, 1])
+        context_j = tf.tile(context_dst[None, :, :], [src_count, 1, 1])
         pair = tf.concat([h_i, h_j, tf.abs(h_i - h_j), h_i * h_j, context_i, context_j], axis=-1)
         return self.graph_projector(pair)
 
@@ -336,36 +349,51 @@ class DenseIndependentTextGTMST(k.Model):
         gathered = tf.gather(store, time_ids)
         return gathered
 
-    def _node_text_tokens(self, time_ids):
+    def _node_text_tokens(self, time_ids, source_ids, destination_ids):
         if self.static_source_destination_text:
-            source_text = self.source_text_projector(self.source_text_embeddings)
-            destination_text = self.destination_text_projector(self.destination_text_embeddings)
+            source_text = tf.gather(self.source_text_projector(self.source_text_embeddings), source_ids)
+            destination_text = tf.gather(
+                self.destination_text_projector(self.destination_text_embeddings),
+                destination_ids,
+            )
             return source_text, destination_text
 
         # For dynamic node text, average over the requested time block to keep
         # source/destination text mode-level rather than OD-time-level.
         source_raw = tf.reduce_mean(tf.gather(self.source_text_embeddings, time_ids), axis=0)
         destination_raw = tf.reduce_mean(tf.gather(self.destination_text_embeddings, time_ids), axis=0)
-        return self.source_text_projector(source_raw), self.destination_text_projector(destination_raw)
+        return (
+            tf.gather(self.source_text_projector(source_raw), source_ids),
+            tf.gather(self.destination_text_projector(destination_raw), destination_ids),
+        )
 
-    def _numeric_control_token(self, time_ids, graph_pair):
+    def _numeric_control_token(self, time_ids, graph_pair, source_ids, destination_ids):
         if not self.use_numeric:
             return None
         if self.numeric_projector is None:
             raise RuntimeError("numeric_projector is required when use_numeric=True")
         if self.source_numeric_features.shape.rank == 2:
-            source_numeric = self.source_numeric_features
-            destination_numeric = self.destination_numeric_features
+            source_numeric = tf.gather(self.source_numeric_features, source_ids)
+            destination_numeric = tf.gather(self.destination_numeric_features, destination_ids)
         else:
-            source_numeric = tf.reduce_mean(tf.gather(self.source_numeric_features, time_ids), axis=0)
-            destination_numeric = tf.reduce_mean(tf.gather(self.destination_numeric_features, time_ids), axis=0)
+            source_numeric = tf.gather(
+                tf.reduce_mean(tf.gather(self.source_numeric_features, time_ids), axis=0),
+                source_ids,
+            )
+            destination_numeric = tf.gather(
+                tf.reduce_mean(tf.gather(self.destination_numeric_features, time_ids), axis=0),
+                destination_ids,
+            )
         time_numeric = tf.gather(self.time_numeric_features, time_ids)
 
-        source_pair = tf.tile(source_numeric[:, None, :], [1, self.node_count, 1])
-        destination_pair = tf.tile(destination_numeric[None, :, :], [self.node_count, 1, 1])
+        src_count = tf.shape(source_ids)[0]
+        dst_count = tf.shape(destination_ids)[0]
+        tc = tf.shape(time_ids)[0]
+        source_pair = tf.tile(source_numeric[:, None, :], [1, dst_count, 1])
+        destination_pair = tf.tile(destination_numeric[None, :, :], [src_count, 1, 1])
         pair_numeric = tf.concat([source_pair, destination_pair, graph_pair], axis=-1)
-        pair_numeric = tf.tile(pair_numeric[:, :, None, :], [1, 1, tf.shape(time_ids)[0], 1])
-        time_numeric = tf.tile(time_numeric[None, None, :, :], [self.node_count, self.node_count, 1, 1])
+        pair_numeric = tf.tile(pair_numeric[:, :, None, :], [1, 1, tc, 1])
+        time_numeric = tf.tile(time_numeric[None, None, :, :], [src_count, dst_count, 1, 1])
         return self.numeric_projector(tf.concat([pair_numeric, time_numeric], axis=-1))
 
     def _infonce(self, left, right):
@@ -394,29 +422,40 @@ class DenseIndependentTextGTMST(k.Model):
         self.add_metric(time_loss, name="dense_time_text_align_loss", aggregation="mean")
         self.add_metric(weighted, name="dense_text_align_weighted_loss", aggregation="mean")
 
-    def call(self, time_ids, training=None):
-        time_ids = tf.cast(time_ids, tf.int32)
+    def call(self, inputs, training=None):
+        if isinstance(inputs, (list, tuple)):
+            source_ids = tf.cast(tf.reshape(inputs[0], [-1]), tf.int32)
+            destination_ids = tf.cast(tf.reshape(inputs[1], [-1]), tf.int32)
+            time_ids = tf.cast(inputs[2], tf.int32)
+        else:
+            source_ids = tf.range(self.node_count, dtype=tf.int32)
+            destination_ids = tf.range(self.node_count, dtype=tf.int32)
+            time_ids = tf.cast(inputs, tf.int32)
         if time_ids.shape.rank == 2:
             time_ids = time_ids[0]
         time_ids = tf.reshape(time_ids, [-1])
         tc = tf.shape(time_ids)[0]
+        src_count = tf.shape(source_ids)[0]
+        dst_count = tf.shape(destination_ids)[0]
 
         node_ids = tf.range(self.node_count, dtype=tf.int32)
-        source_mode = self.source_embedding(node_ids)
-        destination_mode = self.destination_embedding(node_ids)
+        source_mode_all = self.source_embedding(node_ids)
+        destination_mode_all = self.destination_embedding(node_ids)
+        source_mode = tf.gather(source_mode_all, source_ids)
+        destination_mode = tf.gather(destination_mode_all, destination_ids)
         time_mode = self.time_embedding(time_ids)
-        graph_pair = self.graph_encoder(time_ids, training=training)
+        graph_pair = self.graph_encoder([source_ids, destination_ids], training=training)
 
-        source_text, destination_text = self._node_text_tokens(time_ids)
+        source_text, destination_text = self._node_text_tokens(time_ids, source_ids, destination_ids)
         time_text = self.time_text_projector(tf.gather(self.time_text_embeddings, time_ids))
 
-        source_pair = tf.tile(source_mode[:, None, None, :], [1, self.node_count, tc, 1])
-        destination_pair = tf.tile(destination_mode[None, :, None, :], [self.node_count, 1, tc, 1])
-        time_pair = tf.tile(time_mode[None, None, :, :], [self.node_count, self.node_count, 1, 1])
+        source_pair = tf.tile(source_mode[:, None, None, :], [1, dst_count, tc, 1])
+        destination_pair = tf.tile(destination_mode[None, :, None, :], [src_count, 1, tc, 1])
+        time_pair = tf.tile(time_mode[None, None, :, :], [src_count, dst_count, 1, 1])
         graph_pair_time = tf.tile(graph_pair[:, :, None, :], [1, 1, tc, 1])
-        source_text_pair = tf.tile(source_text[:, None, None, :], [1, self.node_count, tc, 1])
-        destination_text_pair = tf.tile(destination_text[None, :, None, :], [self.node_count, 1, tc, 1])
-        time_text_pair = tf.tile(time_text[None, None, :, :], [self.node_count, self.node_count, 1, 1])
+        source_text_pair = tf.tile(source_text[:, None, None, :], [1, dst_count, tc, 1])
+        destination_text_pair = tf.tile(destination_text[None, :, None, :], [src_count, 1, tc, 1])
+        time_text_pair = tf.tile(time_text[None, None, :, :], [src_count, dst_count, 1, 1])
 
         tokens = [
             source_pair,
@@ -427,16 +466,16 @@ class DenseIndependentTextGTMST(k.Model):
             destination_text_pair,
             time_text_pair,
         ]
-        numeric_token = self._numeric_control_token(time_ids, graph_pair)
+        numeric_token = self._numeric_control_token(time_ids, graph_pair, source_ids, destination_ids)
         if numeric_token is not None:
             tokens.append(numeric_token)
 
         token_tensor = tf.stack(tokens, axis=3)
-        token_tensor = tf.reshape(token_tensor, [self.node_count * self.node_count * tc, self.token_count, self.d_model])
+        token_tensor = tf.reshape(token_tensor, [src_count * dst_count * tc, self.token_count, self.d_model])
         role = self.role_embedding(tf.range(self.token_count, dtype=tf.int32))
         token_tensor = token_tensor + role[None, :, :]
 
-        graph_flat = tf.reshape(graph_pair_time, [self.node_count * self.node_count * tc, self.d_model])
+        graph_flat = tf.reshape(graph_pair_time, [src_count * dst_count * tc, self.d_model])
         attention_bias = self.graph_bias(graph_flat)
         for block in self.blocks:
             token_tensor = block(token_tensor, attention_bias=attention_bias, training=training)
@@ -448,7 +487,7 @@ class DenseIndependentTextGTMST(k.Model):
         x = self.prediction_dropout(x, training=training)
         x = self.prediction_dense_2(x)
         pred = self.prediction(x)
-        pred = tf.reshape(pred, [self.node_count, self.node_count, tc])
+        pred = tf.reshape(pred, [src_count, dst_count, tc])
 
         self._add_text_align_loss(source_mode, destination_mode, time_mode, source_text, destination_text, time_text)
         return pred[None, :, :, :]

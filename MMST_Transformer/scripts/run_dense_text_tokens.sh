@@ -26,6 +26,9 @@ VARIANTS_RAW="${VARIANTS:-M7_dense M8_dense M9_dense}"
 EPOCHS="${EPOCHS:-200}"
 PATIENCE="${PATIENCE:-10}"
 CHUNK_LEN="${CHUNK_LEN:-4}"
+SOURCE_BLOCK_SIZE="${SOURCE_BLOCK_SIZE:-32}"
+DESTINATION_BLOCK_SIZE="${DESTINATION_BLOCK_SIZE:-32}"
+STEPS_PER_EPOCH="${STEPS_PER_EPOCH:-120}"
 D_MODEL="${D_MODEL:-64}"
 NODE_DIM="${NODE_DIM:-64}"
 GCN_DIM="${GCN_DIM:-128}"
@@ -66,6 +69,9 @@ PY
     --split-path "$split_path" \
     --variant "$variant" \
     --chunk-len "$CHUNK_LEN" \
+    --source-block-size "$SOURCE_BLOCK_SIZE" \
+    --destination-block-size "$DESTINATION_BLOCK_SIZE" \
+    --steps-per-epoch "$STEPS_PER_EPOCH" \
     --d-model "$D_MODEL" \
     --node-dim "$NODE_DIM" \
     --gcn-dim "$GCN_DIM" \
@@ -96,6 +102,8 @@ PY
   echo "Visible rates: ${VISIBLE_RATES[*]}"
   echo "Variants: ${VARIANTS[*]}"
   echo "Chunk length: $CHUNK_LEN"
+  echo "Source/destination block: $SOURCE_BLOCK_SIZE $DESTINATION_BLOCK_SIZE"
+  echo "Steps per epoch: $STEPS_PER_EPOCH"
   echo "Epochs: $EPOCHS"
   echo "Patience: $PATIENCE"
 
