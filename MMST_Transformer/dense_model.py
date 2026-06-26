@@ -277,7 +277,11 @@ class DenseIndependentTextGTMST(k.Model):
         self.source_text_projector = self._projector(text_hidden_dim, "dense_source_text_projector")
         self.destination_text_projector = self._projector(text_hidden_dim, "dense_destination_text_projector")
         self.time_text_projector = self._projector(text_hidden_dim, "dense_time_text_projector")
-        self.numeric_projector = self._projector(text_hidden_dim, "dense_numeric_control_projector")
+        self.numeric_projector = (
+            self._projector(text_hidden_dim, "dense_numeric_control_projector")
+            if self.use_numeric
+            else None
+        )
 
         self.token_count = 8 if self.use_numeric else 7
         self.role_embedding = k.layers.Embedding(self.token_count, d_model, name="dense_role_embedding")
@@ -347,6 +351,8 @@ class DenseIndependentTextGTMST(k.Model):
     def _numeric_control_token(self, time_ids, graph_pair):
         if not self.use_numeric:
             return None
+        if self.numeric_projector is None:
+            raise RuntimeError("numeric_projector is required when use_numeric=True")
         if self.source_numeric_features.shape.rank == 2:
             source_numeric = self.source_numeric_features
             destination_numeric = self.destination_numeric_features
