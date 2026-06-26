@@ -68,7 +68,7 @@ class DenseStaticGraphContext(k.layers.Layer):
         context = tf.matmul(weights, value)
         return self.attention_norm(h + context)
 
-    def call(self, training=None):
+    def call(self, inputs=None, training=None):
         node_ids = tf.range(self.node_count, dtype=tf.int32)
         x = self.node_embedding(node_ids)
         adjacency = self.normalized_topology
@@ -399,7 +399,7 @@ class DenseIndependentTextGTMST(k.Model):
         source_mode = self.source_embedding(node_ids)
         destination_mode = self.destination_embedding(node_ids)
         time_mode = self.time_embedding(time_ids)
-        graph_pair = self.graph_encoder(training=training)
+        graph_pair = self.graph_encoder(time_ids, training=training)
 
         source_text, destination_text = self._node_text_tokens(time_ids)
         time_text = self.time_text_projector(tf.gather(self.time_text_embeddings, time_ids))
