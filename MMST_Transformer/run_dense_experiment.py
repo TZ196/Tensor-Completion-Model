@@ -215,7 +215,7 @@ def main():
         )
     if args.checkpoint_path is None:
         stem = os.path.splitext(os.path.basename(args.metrics_path))[0]
-        args.checkpoint_path = os.path.join("checkpoints", stem + ".best.weights.h5")
+        args.checkpoint_path = os.path.join("checkpoints", stem + ".best.ckpt")
     if args.history_path is None:
         stem = os.path.splitext(os.path.basename(args.metrics_path))[0]
         args.history_path = os.path.join("histories", stem + ".history.json")
@@ -310,6 +310,7 @@ def main():
         int(args.chunk_len),
     )
     os.makedirs(os.path.dirname(args.checkpoint_path), exist_ok=True)
+    checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
 
     rng = random.Random(args.seed)
     best_val_mae = float("inf")
@@ -393,15 +394,15 @@ def main():
             best_val_mae = val_mae
             best_epoch = epoch
             wait = 0
-            model.save_weights(args.checkpoint_path)
+            checkpoint.write(args.checkpoint_path)
         else:
             wait += 1
             if wait >= args.early_stopping_patience:
                 print("Early stopping at epoch %d; best epoch %d" % (epoch, best_epoch))
                 break
 
-    if os.path.exists(args.checkpoint_path):
-        model.load_weights(args.checkpoint_path)
+    if os.path.exists(args.checkpoint_path + ".index"):
+        checkpoint.restore(args.checkpoint_path).expect_partial()
     pred_norm = predict_full_tensor(model, shape, chunks, predict_step=predict_step)
     train_metrics = evaluate_predictions(pred_norm, train_indices, train_values, target_scale)
     val_metrics = evaluate_predictions(pred_norm, val_indices, val_values, target_scale)
