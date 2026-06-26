@@ -38,6 +38,8 @@ FF_DIM="${FF_DIM:-128}"
 DROPOUT="${DROPOUT:-0.1}"
 LR="${LR:-1e-3}"
 TEXT_ALIGN_WEIGHT="${TEXT_ALIGN_WEIGHT:-0.0001}"
+LOSS_TYPE="${LOSS_TYPE:-mse}"
+TAIL_WEIGHT_BETA="${TAIL_WEIGHT_BETA:-2.0}"
 
 read -r -a VISIBLE_RATES <<< "$VISIBLE_RATES_RAW"
 read -r -a VARIANTS <<< "$VARIANTS_RAW"
@@ -83,6 +85,8 @@ PY
     --epochs "$EPOCHS" \
     --early-stopping-patience "$PATIENCE" \
     --target-normalization max \
+    --loss-type "$LOSS_TYPE" \
+    --tail-weight-beta "$TAIL_WEIGHT_BETA" \
     --seed "$SEED" \
     --text-align-weight "$TEXT_ALIGN_WEIGHT" \
     --metrics-path "$metrics_path" \
@@ -106,6 +110,8 @@ PY
   echo "Steps per epoch: $STEPS_PER_EPOCH"
   echo "Epochs: $EPOCHS"
   echo "Patience: $PATIENCE"
+  echo "Loss type: $LOSS_TYPE"
+  echo "Tail weight beta: $TAIL_WEIGHT_BETA"
 
   for rate in "${VISIBLE_RATES[@]}"; do
     for variant in "${VARIANTS[@]}"; do
@@ -124,6 +130,7 @@ labels = {
     "M7_dense": "IndependentTextTokens",
     "M8_dense": "TextTokens+NumericControl",
     "M9_dense": "TextTokens+NumericControl+TextAlign",
+    "M10_dense": "ODToken+TextTokens+NumericControl",
 }
 print(f"{'Visible':>7s}  {'Variant':>9s}  {'Model':38s}  {'NMAE':>10s}  {'NRMSE':>10s}")
 print("-" * 82)

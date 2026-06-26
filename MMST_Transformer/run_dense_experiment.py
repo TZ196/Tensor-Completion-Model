@@ -50,7 +50,18 @@ def gather_block(tensor, source_ids, destination_ids, time_ids):
     return tf.gather(block, time_ids, axis=2)
 
 
-def masked_block_loss(model, target_tensor, mask_tensor, source_ids, destination_ids, time_ids, training):
+def masked_block_loss(
+    model,
+    target_tensor,
+    mask_tensor,
+    source_ids,
+    destination_ids,
+    time_ids,
+    training,
+    loss_type="mse",
+    tail_weight_beta=2.0,
+    target_mean=1.0,
+):
     source_ids = tf.cast(source_ids, tf.int32)
     destination_ids = tf.cast(destination_ids, tf.int32)
     time_ids = tf.cast(time_ids, tf.int32)
@@ -58,7 +69,23 @@ def masked_block_loss(model, target_tensor, mask_tensor, source_ids, destination
     y_true = gather_block(target_tensor, source_ids, destination_ids, time_ids)
     mask = gather_block(mask_tensor, source_ids, destination_ids, time_ids)
     count = tf.reduce_sum(mask)
-    sq = tf.square(pred - y_true) * mask
+    error = pred - y_true
+    if loss_type == "mse":
+        point_loss = tf.square(error)
+    elif loss_type == "weighted_mse":
+        weight = 1.0 + tail_weight_beta * tf.math.log1p(tf.maximum(y_true, 0.0) / tf.maximum(target_mean, 1e-6))
+        point_loss = weight * tf.square(error)
+    elif loss_type == "huber":
+        abs_error = tf.abs(error)
+        delta = tf.constant(1.0, dtype=tf.float32) / tf.maximum(target_mean, 1.0)
+        point_loss = tf.where(
+            abs_error <= delta,
+            0.5 * tf.square(error),
+            delta * (abs_error - 0.5 * delta),
+        )
+    else:
+        raise ValueError("Unsupported loss_type: %s" % loss_type)
+    sq = point_loss * mask
     pred_loss = tf.cond(
         count > 0.0,
         lambda: tf.reduce_sum(sq) / count,
@@ -68,7 +95,17 @@ def masked_block_loss(model, target_tensor, mask_tensor, source_ids, destination
     return total_loss, pred_loss, count
 
 
-def make_compiled_steps(model, optimizer, target_tensor, train_mask_tensor, val_mask_tensor, chunk_len):
+def make_compiled_steps(
+    model,
+    optimizer,
+    target_tensor,
+    train_mask_tensor,
+    val_mask_tensor,
+    chunk_len,
+    loss_type,
+    tail_weight_beta,
+    target_mean,
+):
     train_signature = [
         tf.TensorSpec(shape=(None,), dtype=tf.int32),
         tf.TensorSpec(shape=(None,), dtype=tf.int32),
@@ -91,6 +128,9 @@ def make_compiled_steps(model, optimizer, target_tensor, train_mask_tensor, val_
                 destination_ids,
                 time_ids,
                 training=True,
+                loss_type=loss_type,
+                tail_weight_beta=tail_weight_beta,
+                target_mean=target_mean,
             )
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(
@@ -108,6 +148,9 @@ def make_compiled_steps(model, optimizer, target_tensor, train_mask_tensor, val_
             destination_ids,
             time_ids,
             training=False,
+            loss_type=loss_type,
+            tail_weight_beta=tail_weight_beta,
+            target_mean=target_mean,
         )
 
     @tf.function(input_signature=predict_signature, reduce_retracing=True)
@@ -158,6 +201,7 @@ def variant_config(variant):
         "M7_dense": dict(use_numeric=False, align=False, label="IndependentTextTokens"),
         "M8_dense": dict(use_numeric=True, align=False, label="IndependentTextTokens+NumericControl"),
         "M9_dense": dict(use_numeric=True, align=True, label="IndependentTextTokens+NumericControl+TextAlign"),
+        "M10_dense": dict(use_numeric=True, align=False, label="ODToken+TextTokens+NumericControl"),
     }
     if variant not in mapping:
         raise ValueError("Unsupported dense variant %s" % variant)
@@ -171,7 +215,7 @@ def parse_args():
     parser.add_argument("--split-path", default=None)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--observed-ratio", type=float, default=0.07)
-    parser.add_argument("--variant", choices=["M7_dense", "M8_dense", "M9_dense"], default="M8_dense")
+    parser.add_argument("--variant", choices=["M7_dense", "M8_dense", "M9_dense", "M10_dense"], default="M8_dense")
     parser.add_argument("--mode-text-dir", default="../CostCO/mode_text_numeric_ablation_data/both")
     parser.add_argument("--chunk-len", type=int, default=4)
     parser.add_argument("--source-block-size", type=int, default=32)
@@ -191,6 +235,8 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--target-normalization", choices=["max", "none"], default="max")
+    parser.add_argument("--loss-type", choices=["mse", "weighted_mse", "huber"], default="mse")
+    parser.add_argument("--tail-weight-beta", type=float, default=2.0)
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument("--shuffle-chunks", action="store_true")
@@ -255,6 +301,7 @@ def main():
 
     target_scale = get_target_scale(train_values, args.target_normalization)
     target_norm = np.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0).astype("float32") / target_scale
+    target_mean_norm = float(np.mean(train_values / target_scale))
     train_mask = build_mask(shape, train_indices)
     val_mask = build_mask(shape, val_indices)
     test_mask = build_mask(shape, test_indices)
@@ -308,6 +355,9 @@ def main():
         train_mask_tensor,
         val_mask_tensor,
         int(args.chunk_len),
+        args.loss_type,
+        float(args.tail_weight_beta),
+        float(target_mean_norm),
     )
     os.makedirs(os.path.dirname(args.checkpoint_path), exist_ok=True)
     checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
@@ -326,6 +376,8 @@ def main():
     print("Chunks:", len(chunks))
     print("Source/destination block:", args.source_block_size, args.destination_block_size)
     print("Steps per epoch:", args.steps_per_epoch)
+    print("Loss type:", args.loss_type)
+    print("Tail weight beta:", args.tail_weight_beta)
     print("Metrics path:", args.metrics_path)
     print("Train/val/test entries:", train_indices.shape[0], val_indices.shape[0], test_indices.shape[0])
 

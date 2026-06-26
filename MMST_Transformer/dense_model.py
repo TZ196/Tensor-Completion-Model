@@ -197,6 +197,7 @@ class DenseIndependentTextGTMST(k.Model):
       M7_dense: source/destination/time/graph + text tokens
       M8_dense: M7_dense + numeric control token
       M9_dense: M8_dense + mode-level TextAlign loss
+      M10_dense: OD token + time/text/numeric tokens
     """
 
     def __init__(
@@ -225,8 +226,8 @@ class DenseIndependentTextGTMST(k.Model):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        if variant not in ("M7_dense", "M8_dense", "M9_dense"):
-            raise ValueError("Dense variant must be M7_dense, M8_dense, or M9_dense")
+        if variant not in ("M7_dense", "M8_dense", "M9_dense", "M10_dense"):
+            raise ValueError("Dense variant must be M7_dense, M8_dense, M9_dense, or M10_dense")
         self.shape_ = [int(value) for value in shape]
         self.node_count = self.shape_[0]
         self.time_count = self.shape_[2]
@@ -235,6 +236,7 @@ class DenseIndependentTextGTMST(k.Model):
         self.num_heads = int(num_heads)
         self.text_align_weight = float(text_align_weight if variant == "M9_dense" else 0.0)
         self.alignment_temperature = float(alignment_temperature)
+        self.use_od_token = variant == "M10_dense"
 
         source_text = _as_float_array(source_text_embeddings, "source_text_embeddings")
         destination_text = _as_float_array(destination_text_embeddings, "destination_text_embeddings")
@@ -250,7 +252,7 @@ class DenseIndependentTextGTMST(k.Model):
         self.destination_text_embeddings = tf.constant(destination_text, dtype=tf.float32)
         self.time_text_embeddings = tf.constant(time_text, dtype=tf.float32)
 
-        self.use_numeric = variant in ("M8_dense", "M9_dense")
+        self.use_numeric = variant in ("M8_dense", "M9_dense", "M10_dense")
         if self.use_numeric:
             for name, value in (
                 ("source_numeric_features", source_numeric_features),
@@ -295,8 +297,16 @@ class DenseIndependentTextGTMST(k.Model):
             if self.use_numeric
             else None
         )
+        self.od_projector = (
+            self._projector(ff_dim, "dense_od_token_projector")
+            if self.use_od_token
+            else None
+        )
 
-        self.token_count = 8 if self.use_numeric else 7
+        if self.use_od_token:
+            self.token_count = 6
+        else:
+            self.token_count = 8 if self.use_numeric else 7
         self.role_embedding = k.layers.Embedding(self.token_count, d_model, name="dense_role_embedding")
         self.graph_bias = DenseGraphAttentionBias(
             token_count=self.token_count,
@@ -457,18 +467,41 @@ class DenseIndependentTextGTMST(k.Model):
         destination_text_pair = tf.tile(destination_text[None, :, None, :], [src_count, 1, tc, 1])
         time_text_pair = tf.tile(time_text[None, None, :, :], [src_count, dst_count, 1, 1])
 
-        tokens = [
-            source_pair,
-            destination_pair,
-            time_pair,
-            graph_pair_time,
-            source_text_pair,
-            destination_text_pair,
-            time_text_pair,
-        ]
         numeric_token = self._numeric_control_token(time_ids, graph_pair, source_ids, destination_ids)
-        if numeric_token is not None:
-            tokens.append(numeric_token)
+        if self.use_od_token:
+            if self.od_projector is None:
+                raise RuntimeError("od_projector is required when use_od_token=True")
+            od_raw = tf.concat(
+                [
+                    source_pair,
+                    destination_pair,
+                    tf.abs(source_pair - destination_pair),
+                    source_pair * destination_pair,
+                    graph_pair_time,
+                ],
+                axis=-1,
+            )
+            od_token = self.od_projector(od_raw)
+            tokens = [
+                od_token,
+                time_pair,
+                source_text_pair,
+                destination_text_pair,
+                time_text_pair,
+                numeric_token,
+            ]
+        else:
+            tokens = [
+                source_pair,
+                destination_pair,
+                time_pair,
+                graph_pair_time,
+                source_text_pair,
+                destination_text_pair,
+                time_text_pair,
+            ]
+            if numeric_token is not None:
+                tokens.append(numeric_token)
 
         token_tensor = tf.stack(tokens, axis=3)
         token_tensor = tf.reshape(token_tensor, [src_count * dst_count * tc, self.token_count, self.d_model])
