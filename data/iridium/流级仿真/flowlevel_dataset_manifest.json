@@ -1,0 +1,30 @@
+{
+  "dataset_type": "flowlevel_training_data_full",
+  "source_flow_tensor": "D:\\hypatia-flowlevel-workspace\\experiments\\kuiper_10x34_validation\\flow_output\\iridium_66_feasible_topology_probe_2h_5s\\flow_state_5000ms_for_7200s\\sat_path_tensor_delivered_mb.npy",
+  "source_adjacency_tensor": "D:\\hypatia-flowlevel-workspace\\experiments\\kuiper_10x34_validation\\gen_data\\iridium_66_feasible_topology_probe_2h_5s\\dynamic_state_5000ms_for_7200s\\isl_topology_tensor.npy",
+  "source_axis_order": "time,satellite,satellite",
+  "target_axis_order": "satellite,satellite,time",
+  "time_step_s": 5,
+  "time_slices": 1440,
+  "duration_s": 7200,
+  "files": {
+    "traffic7200s.npy": {
+      "path": "E:\\张量模型\\data\\iridium\\流级仿真\\training_data\\traffic7200s.npy",
+      "shape": [
+        66,
+        66,
+        1440
+      ],
+      "dtype": "float32"
+    },
+    "adjacency_matrix.npy": {
+      "path": "E:\\张量模型\\data\\iridium\\流级仿真\\training_data\\adjacency_matrix.npy",
+      "shape": [
+        66,
+        66,
+        1440
+      ],
+      "dtype": "uint8"
+    }
+  }
+}

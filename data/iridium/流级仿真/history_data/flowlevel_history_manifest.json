@@ -1,0 +1,55 @@
+{
+  "dataset_type": "flowlevel_history_data_after_training_window",
+  "relaxed_topology": true,
+  "constellation": "iridium_66_coverage_feasible",
+  "network_name": "iridium_66_feasible_topology_probe_history_after2h_30m_5s",
+  "source_flow_tensor": "D:\\hypatia-flowlevel-workspace\\experiments\\kuiper_10x34_validation\\flow_output\\iridium_66_feasible_topology_probe_history_after2h_30m_5s\\flow_state_5000ms_for_1800s\\sat_path_tensor_delivered_mb.npy",
+  "source_adjacency_tensor": "D:\\hypatia-flowlevel-workspace\\experiments\\kuiper_10x34_validation\\gen_data\\iridium_66_feasible_topology_probe_history_after2h_30m_5s\\dynamic_state_5000ms_for_1800s\\isl_topology_tensor.npy",
+  "source_axis_order": "time,satellite,satellite",
+  "target_axis_order": "satellite,satellite,time",
+  "time_step_s": 5,
+  "time_slices": 360,
+  "duration_s": 1800,
+  "start_offset_s": 7200,
+  "end_time_s": 9000,
+  "first_time_ns": 7200000000000,
+  "last_time_ns": 8995000000000,
+  "files": {
+    "traffic1800s.npy": {
+      "path": "E:\\张量模型\\data\\iridium\\流级仿真\\history_data\\traffic1800s.npy",
+      "shape": [
+        66,
+        66,
+        360
+      ],
+      "dtype": "float32",
+      "unit": "MB"
+    },
+    "adjacency_matrix.npy": {
+      "path": "E:\\张量模型\\data\\iridium\\流级仿真\\history_data\\adjacency_matrix.npy",
+      "shape": [
+        66,
+        66,
+        360
+      ],
+      "dtype": "uint8"
+    },
+    "time_ns.npy": {
+      "path": "E:\\张量模型\\data\\iridium\\流级仿真\\history_data\\time_ns.npy",
+      "shape": [
+        360
+      ],
+      "dtype": "int64"
+    }
+  },
+  "traffic_coverage": {
+    "min": 0.19603729603729603,
+    "mean": 0.31439976689976695,
+    "max": 0.41095571095571093
+  },
+  "active_undirected_isls": {
+    "min": 88.0,
+    "mean": 90.25277777777778,
+    "max": 91.0
+  }
+}
