@@ -12,12 +12,12 @@ def _as_float_array(value, name):
     return array
 
 
-class DenseStaticGraphContext(k.layers.Layer):
-    """Static satellite graph encoder used by dense time-block GT-MST.
+class DenseDynamicGraphContext(k.layers.Layer):
+    """Dynamic satellite graph encoder used by dense time-block GT-MST.
 
-    The layer computes static node states from topology[0] once per forward
-    pass, then expands them into pair-level graph tokens for all source-
-    destination pairs. The output shape is [N, N, d_model].
+    The layer gathers topology[t] for each requested time id, computes node
+    states for every time slice, then expands them into pair-level graph tokens.
+    The output shape is [source, destination, time, d_model].
     """
 
     def __init__(self, topology, node_dim=64, gcn_dim=128, d_model=64, dropout=0.0, **kwargs):
@@ -25,12 +25,13 @@ class DenseStaticGraphContext(k.layers.Layer):
         topo = np.asarray(topology, dtype="float32")
         if topo.ndim != 3 or topo.shape[1] != topo.shape[2]:
             raise ValueError("topology must have shape [time,node,node]")
-        topo_static = (topo[0] > 0).astype("float32")
+        topo_binary = (topo > 0).astype("float32")
         self.node_count = int(topo.shape[1])
-        adjacency_with_self = topo_static + np.eye(self.node_count, dtype="float32")
+        self.time_len = int(topo.shape[0])
+        adjacency_with_self = topo_binary + np.eye(self.node_count, dtype="float32")[None, :, :]
         degree = np.sum(adjacency_with_self, axis=-1)
         inv_sqrt = 1.0 / np.sqrt(np.maximum(degree, 1e-6))
-        normalized = adjacency_with_self * inv_sqrt[:, None] * inv_sqrt[None, :]
+        normalized = adjacency_with_self * inv_sqrt[:, :, None] * inv_sqrt[:, None, :]
         self.normalized_topology = tf.constant(normalized, dtype=tf.float32)
         self.attention_mask = tf.constant(adjacency_with_self > 0, dtype=tf.bool)
         self.node_dim = int(node_dim)
@@ -57,28 +58,34 @@ class DenseStaticGraphContext(k.layers.Layer):
             name="dense_graph_token_projector",
         )
 
-    def _node_context(self, h):
+    def _node_context(self, h, attention_mask):
         query = self.attention_query(h)
         key = self.attention_key(h)
         value = self.attention_value(h)
         scale = tf.math.rsqrt(tf.cast(tf.shape(key)[-1], tf.float32))
         scores = tf.matmul(query, key, transpose_b=True) * scale
-        scores = tf.where(self.attention_mask, scores, tf.ones_like(scores) * -1e9)
+        scores = tf.where(attention_mask, scores, tf.ones_like(scores) * -1e9)
         weights = tf.nn.softmax(scores, axis=-1)
         context = tf.matmul(weights, value)
         return self.attention_norm(h + context)
 
     def call(self, inputs=None, training=None):
-        if isinstance(inputs, (list, tuple)) and len(inputs) >= 2:
+        if isinstance(inputs, (list, tuple)) and len(inputs) >= 3:
             src_ids = tf.cast(tf.reshape(inputs[0], [-1]), tf.int32)
             dst_ids = tf.cast(tf.reshape(inputs[1], [-1]), tf.int32)
+            time_ids = tf.cast(tf.reshape(inputs[2], [-1]), tf.int32)
         else:
             src_ids = tf.range(self.node_count, dtype=tf.int32)
             dst_ids = tf.range(self.node_count, dtype=tf.int32)
+            time_ids = tf.range(self.time_len, dtype=tf.int32)
+        time_ids = tf.clip_by_value(time_ids, 0, self.time_len - 1)
 
         node_ids = tf.range(self.node_count, dtype=tf.int32)
         x = self.node_embedding(node_ids)
-        adjacency = self.normalized_topology
+        tc = tf.shape(time_ids)[0]
+        adjacency = tf.gather(self.normalized_topology, time_ids)
+        attention_mask = tf.gather(self.attention_mask, time_ids)
+        x = tf.broadcast_to(x[None, :, :], [tc, self.node_count, self.node_dim])
 
         x1 = tf.matmul(adjacency, x)
         x1 = self.gcn_dense_1(x1)
@@ -92,18 +99,19 @@ class DenseStaticGraphContext(k.layers.Layer):
         x2 = self.dropout(x2, training=training)
         h = self.gcn_norm_2(x1 + x2)
 
-        context = self._node_context(h)
-        h_src = tf.gather(h, src_ids)
-        h_dst = tf.gather(h, dst_ids)
-        context_src = tf.gather(context, src_ids)
-        context_dst = tf.gather(context, dst_ids)
+        context = self._node_context(h, attention_mask)
+        h_src = tf.gather(h, src_ids, axis=1)
+        h_dst = tf.gather(h, dst_ids, axis=1)
+        context_src = tf.gather(context, src_ids, axis=1)
+        context_dst = tf.gather(context, dst_ids, axis=1)
         src_count = tf.shape(src_ids)[0]
         dst_count = tf.shape(dst_ids)[0]
-        h_i = tf.tile(h_src[:, None, :], [1, dst_count, 1])
-        h_j = tf.tile(h_dst[None, :, :], [src_count, 1, 1])
-        context_i = tf.tile(context_src[:, None, :], [1, dst_count, 1])
-        context_j = tf.tile(context_dst[None, :, :], [src_count, 1, 1])
+        h_i = tf.tile(h_src[:, :, None, :], [1, 1, dst_count, 1])
+        h_j = tf.tile(h_dst[:, None, :, :], [1, src_count, 1, 1])
+        context_i = tf.tile(context_src[:, :, None, :], [1, 1, dst_count, 1])
+        context_j = tf.tile(context_dst[:, None, :, :], [1, src_count, 1, 1])
         pair = tf.concat([h_i, h_j, tf.abs(h_i - h_j), h_i * h_j, context_i, context_j], axis=-1)
+        pair = tf.transpose(pair, [1, 2, 0, 3])
         return self.graph_projector(pair)
 
 
@@ -281,13 +289,13 @@ class DenseIndependentTextGTMST(k.Model):
         self.source_embedding = k.layers.Embedding(self.node_count, d_model, name="dense_source_embedding")
         self.destination_embedding = k.layers.Embedding(self.node_count, d_model, name="dense_destination_embedding")
         self.time_embedding = k.layers.Embedding(self.time_count, d_model, name="dense_time_embedding")
-        self.graph_encoder = DenseStaticGraphContext(
+        self.graph_encoder = DenseDynamicGraphContext(
             topology=topology,
             node_dim=node_dim,
             gcn_dim=gcn_dim,
             d_model=d_model,
             dropout=dropout,
-            name="dense_static_graph_context",
+            name="dense_dynamic_graph_context",
         )
         self.source_text_projector = self._projector(text_hidden_dim, "dense_source_text_projector")
         self.destination_text_projector = self._projector(text_hidden_dim, "dense_destination_text_projector")
@@ -377,7 +385,7 @@ class DenseIndependentTextGTMST(k.Model):
             tf.gather(self.destination_text_projector(destination_raw), destination_ids),
         )
 
-    def _numeric_control_token(self, time_ids, graph_pair, source_ids, destination_ids):
+    def _numeric_control_token(self, time_ids, graph_pair_time, source_ids, destination_ids):
         if not self.use_numeric:
             return None
         if self.numeric_projector is None:
@@ -401,8 +409,9 @@ class DenseIndependentTextGTMST(k.Model):
         tc = tf.shape(time_ids)[0]
         source_pair = tf.tile(source_numeric[:, None, :], [1, dst_count, 1])
         destination_pair = tf.tile(destination_numeric[None, :, :], [src_count, 1, 1])
-        pair_numeric = tf.concat([source_pair, destination_pair, graph_pair], axis=-1)
-        pair_numeric = tf.tile(pair_numeric[:, :, None, :], [1, 1, tc, 1])
+        source_pair = tf.tile(source_pair[:, :, None, :], [1, 1, tc, 1])
+        destination_pair = tf.tile(destination_pair[:, :, None, :], [1, 1, tc, 1])
+        pair_numeric = tf.concat([source_pair, destination_pair, graph_pair_time], axis=-1)
         time_numeric = tf.tile(time_numeric[None, None, :, :], [src_count, dst_count, 1, 1])
         return self.numeric_projector(tf.concat([pair_numeric, time_numeric], axis=-1))
 
@@ -454,7 +463,7 @@ class DenseIndependentTextGTMST(k.Model):
         source_mode = tf.gather(source_mode_all, source_ids)
         destination_mode = tf.gather(destination_mode_all, destination_ids)
         time_mode = self.time_embedding(time_ids)
-        graph_pair = self.graph_encoder([source_ids, destination_ids], training=training)
+        graph_pair_time = self.graph_encoder([source_ids, destination_ids, time_ids], training=training)
 
         source_text, destination_text = self._node_text_tokens(time_ids, source_ids, destination_ids)
         time_text = self.time_text_projector(tf.gather(self.time_text_embeddings, time_ids))
@@ -462,12 +471,11 @@ class DenseIndependentTextGTMST(k.Model):
         source_pair = tf.tile(source_mode[:, None, None, :], [1, dst_count, tc, 1])
         destination_pair = tf.tile(destination_mode[None, :, None, :], [src_count, 1, tc, 1])
         time_pair = tf.tile(time_mode[None, None, :, :], [src_count, dst_count, 1, 1])
-        graph_pair_time = tf.tile(graph_pair[:, :, None, :], [1, 1, tc, 1])
         source_text_pair = tf.tile(source_text[:, None, None, :], [1, dst_count, tc, 1])
         destination_text_pair = tf.tile(destination_text[None, :, None, :], [src_count, 1, tc, 1])
         time_text_pair = tf.tile(time_text[None, None, :, :], [src_count, dst_count, 1, 1])
 
-        numeric_token = self._numeric_control_token(time_ids, graph_pair, source_ids, destination_ids)
+        numeric_token = self._numeric_control_token(time_ids, graph_pair_time, source_ids, destination_ids)
         if self.use_od_token:
             if self.od_projector is None:
                 raise RuntimeError("od_projector is required when use_od_token=True")
