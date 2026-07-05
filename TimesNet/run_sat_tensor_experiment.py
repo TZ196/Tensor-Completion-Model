@@ -155,6 +155,186 @@ def make_time_marks(seq_len):
     return marks[None, :, :].astype("float32")
 
 
+def make_window_starts(seq_len, window_len, window_stride):
+    if window_len <= 0:
+        raise ValueError("--window-len must be positive")
+    if window_stride <= 0:
+        raise ValueError("--window-stride must be positive")
+    if window_len > seq_len:
+        window_len = seq_len
+    last_start = seq_len - window_len
+    starts = list(range(0, last_start + 1, window_stride))
+    if not starts or starts[-1] != last_start:
+        starts.append(last_start)
+    return np.asarray(starts, dtype="int64"), int(window_len)
+
+
+def filter_window_starts_by_mask(starts, mask, window_len):
+    selected = [
+        int(start)
+        for start in starts
+        if float(mask[start:start + window_len].sum()) > 0.0
+    ]
+    if not selected:
+        raise ValueError("No windows contain entries for the requested mask")
+    return np.asarray(selected, dtype="int64")
+
+
+def make_time_marks_for_starts(starts, window_len, total_seq_len):
+    offsets = np.arange(window_len, dtype="float32")[None, :]
+    steps = starts.astype("float32")[:, None] + offsets
+    marks = np.stack(
+        [
+            np.sin(2.0 * np.pi * steps / max(total_seq_len, 1)),
+            np.cos(2.0 * np.pi * steps / max(total_seq_len, 1)),
+            steps / max(total_seq_len - 1, 1),
+            np.ones_like(steps),
+        ],
+        axis=2,
+    )
+    return marks.astype("float32")
+
+
+def make_window_batch(values, input_mask, loss_mask, starts, window_len,
+                      total_seq_len, device):
+    value_windows = np.stack(
+        [values[start:start + window_len] for start in starts],
+        axis=0,
+    ).astype("float32")
+    input_windows = np.stack(
+        [input_mask[start:start + window_len] for start in starts],
+        axis=0,
+    ).astype("float32")
+    loss_windows = np.stack(
+        [loss_mask[start:start + window_len] for start in starts],
+        axis=0,
+    ).astype("float32")
+
+    # TimesNet's imputation normalization divides by observed counts per
+    # variable. Per-window zero anchors avoid NaNs without adding loss terms.
+    model_mask = input_windows.copy()
+    empty_variables = model_mask.sum(axis=1) == 0.0
+    if np.any(empty_variables):
+        batch_indices, variable_indices = np.where(empty_variables)
+        model_mask[batch_indices, 0, variable_indices] = 1.0
+
+    x_enc = value_windows * input_windows
+    x_mark = make_time_marks_for_starts(starts, window_len, total_seq_len)
+
+    return (
+        torch.from_numpy(x_enc).float().to(device),
+        torch.from_numpy(x_mark).float().to(device),
+        torch.from_numpy(model_mask).float().to(device),
+        torch.from_numpy(loss_windows).float().to(device),
+        torch.from_numpy(value_windows).float().to(device),
+    )
+
+
+def iter_start_batches(starts, batch_size):
+    for offset in range(0, starts.shape[0], batch_size):
+        yield starts[offset:offset + batch_size]
+
+
+def train_one_epoch(model, optimizer, values, train_mask, train_starts,
+                    window_len, total_seq_len, batch_size, device, rng):
+    model.train()
+    shuffled = train_starts.copy()
+    rng.shuffle(shuffled)
+    total_loss = 0.0
+    total_count = 0.0
+
+    for batch_starts in iter_start_batches(shuffled, batch_size):
+        x_enc, x_mark, model_mask, loss_mask, target = make_window_batch(
+            values,
+            train_mask,
+            train_mask,
+            batch_starts,
+            window_len,
+            total_seq_len,
+            device,
+        )
+        count = float(loss_mask.sum().detach().cpu())
+        if count <= 0.0:
+            continue
+
+        optimizer.zero_grad()
+        output = model(x_enc, x_mark, None, None, model_mask)
+        loss_sum = F.l1_loss(output * loss_mask, target * loss_mask,
+                             reduction="sum")
+        loss = loss_sum / torch.clamp(loss_mask.sum(), min=1.0)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += float(loss_sum.detach().cpu())
+        total_count += count
+
+    if total_count <= 0.0:
+        raise ValueError("No training entries were used in this epoch")
+    return total_loss / total_count
+
+
+@torch.no_grad()
+def evaluate_window_mae(model, values, train_mask, eval_mask, eval_starts,
+                        window_len, total_seq_len, batch_size, device):
+    model.eval()
+    total_loss = 0.0
+    total_count = 0.0
+    for batch_starts in iter_start_batches(eval_starts, batch_size):
+        x_enc, x_mark, model_mask, loss_mask, target = make_window_batch(
+            values,
+            train_mask,
+            eval_mask,
+            batch_starts,
+            window_len,
+            total_seq_len,
+            device,
+        )
+        count = float(loss_mask.sum().detach().cpu())
+        if count <= 0.0:
+            continue
+        output = model(x_enc, x_mark, None, None, model_mask)
+        loss_sum = F.l1_loss(output * loss_mask, target * loss_mask,
+                             reduction="sum")
+        total_loss += float(loss_sum.detach().cpu())
+        total_count += count
+
+    if total_count <= 0.0:
+        raise ValueError("No evaluation entries were used")
+    return total_loss / total_count
+
+
+@torch.no_grad()
+def predict_with_window_average(model, values, train_mask, window_starts,
+                                window_len, total_seq_len, batch_size, device):
+    model.eval()
+    pred_sum = np.zeros_like(values, dtype="float32")
+    pred_count = np.zeros_like(values, dtype="float32")
+    zero_mask = np.zeros_like(train_mask, dtype="float32")
+
+    for batch_starts in iter_start_batches(window_starts, batch_size):
+        x_enc, x_mark, model_mask, _, _ = make_window_batch(
+            values,
+            train_mask,
+            zero_mask,
+            batch_starts,
+            window_len,
+            total_seq_len,
+            device,
+        )
+        output = model(x_enc, x_mark, None, None, model_mask)
+        output_np = output.detach().cpu().numpy().astype("float32")
+        for batch_index, start in enumerate(batch_starts):
+            end = int(start) + window_len
+            pred_sum[start:end] += output_np[batch_index]
+            pred_count[start:end] += 1.0
+
+    uncovered = pred_count == 0.0
+    if np.any(uncovered):
+        pred_count[uncovered] = 1.0
+        pred_sum[uncovered] = values[uncovered]
+    return pred_sum / pred_count
+
+
 def evaluate_predictions(pred, indices, values, dst_count):
     time, variable = flat_positions(indices, dst_count)
     y_pred = pred[time, variable]
@@ -213,6 +393,20 @@ def parse_args():
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--num-kernels", type=int, default=6)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--window-len",
+        type=int,
+        default=96,
+        help="Temporal sliding-window length for full-feature TimesNet training.",
+    )
+    parser.add_argument(
+        "--window-stride",
+        type=int,
+        default=48,
+        help="Temporal stride between adjacent training/evaluation windows.",
+    )
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--eval-batch-size", type=int, default=8)
     return parser.parse_args()
 
 
@@ -267,30 +461,34 @@ def main():
     train_time, train_var = flat_positions(split["train_indices"], shape[1])
     train_mask[train_time, train_var] = 1.0
 
-    # TimesNet's imputation normalization needs at least one observed value per
-    # variable. Synthetic zero anchors avoid NaNs without adding loss terms.
-    norm_mask = train_mask.copy()
-    empty_variables = np.where(norm_mask.sum(axis=0) == 0)[0]
-    if empty_variables.size:
-        norm_mask[0, empty_variables] = 1.0
-
-    x_enc = torch.from_numpy((values * train_mask)[None, :, :]).float().to(device)
-    x_mark = torch.from_numpy(make_time_marks(seq_len)).float().to(device)
-    model_mask = torch.from_numpy(norm_mask[None, :, :]).float().to(device)
-    loss_mask = torch.from_numpy(train_mask[None, :, :]).float().to(device)
-    target = torch.from_numpy(values[None, :, :]).float().to(device)
-
     val_mask = np.zeros_like(values, dtype="float32")
     val_time, val_var = flat_positions(split["val_indices"], shape[1])
     val_mask[val_time, val_var] = 1.0
-    val_loss_mask = torch.from_numpy(val_mask[None, :, :]).float().to(device)
 
-    configs = build_timesnet_configs(args, input_dim, seq_len)
+    window_starts, actual_window_len = make_window_starts(
+        seq_len,
+        args.window_len,
+        args.window_stride,
+    )
+    train_window_starts = filter_window_starts_by_mask(
+        window_starts,
+        train_mask,
+        actual_window_len,
+    )
+    val_window_starts = filter_window_starts_by_mask(
+        window_starts,
+        val_mask,
+        actual_window_len,
+    )
+
+    configs = build_timesnet_configs(args, input_dim, actual_window_len)
     model = Model(configs).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    epoch_rng = np.random.RandomState(args.seed + 2027)
 
     print("Tensor shape:", list(shape))
     print("Split mode: random transductive completion")
+    print("Training mode: full-feature sliding-window batches")
     print("Total entries:", data_stats["total_entries"])
     print("Finite entries:", data_stats["finite_entries"])
     print("Non-zero finite entries:", data_stats["nonzero_finite_entries"])
@@ -308,31 +506,40 @@ def main():
     print("Metrics path:", args.metrics_path)
     print("Target normalization:", args.target_normalization)
     print("Target scale:", target_scale)
+    print("Window len/stride/count:", actual_window_len, args.window_stride,
+          int(window_starts.shape[0]))
+    print("Train/val windows:", int(train_window_starts.shape[0]),
+          int(val_window_starts.shape[0]))
+    print("Batch/eval batch:", args.batch_size, args.eval_batch_size)
     print("Device:", device)
 
     best_state = None
     best_val = float("inf")
     wait = 0
     for epoch in range(1, args.epochs + 1):
-        model.train()
-        optimizer.zero_grad()
-        output = model(x_enc, x_mark, None, None, model_mask)
-        train_loss = F.l1_loss(output * loss_mask, target * loss_mask, reduction="sum")
-        train_loss = train_loss / torch.clamp(loss_mask.sum(), min=1.0)
-        train_loss.backward()
-        optimizer.step()
-
-        model.eval()
-        with torch.no_grad():
-            val_output = model(x_enc, x_mark, None, None, model_mask)
-            val_loss = F.l1_loss(
-                val_output * val_loss_mask,
-                target * val_loss_mask,
-                reduction="sum",
-            )
-            val_loss = val_loss / torch.clamp(val_loss_mask.sum(), min=1.0)
-        train_value = float(train_loss.detach().cpu())
-        val_value = float(val_loss.detach().cpu())
+        train_value = train_one_epoch(
+            model,
+            optimizer,
+            values,
+            train_mask,
+            train_window_starts,
+            actual_window_len,
+            seq_len,
+            args.batch_size,
+            device,
+            epoch_rng,
+        )
+        val_value = evaluate_window_mae(
+            model,
+            values,
+            train_mask,
+            val_mask,
+            val_window_starts,
+            actual_window_len,
+            seq_len,
+            args.eval_batch_size,
+            device,
+        )
         print(
             "Epoch %03d/%03d - train_mae %.6f - val_mae %.6f" %
             (epoch, args.epochs, train_value, val_value)
@@ -355,9 +562,16 @@ def main():
         model.load_state_dict(best_state)
 
     model.eval()
-    with torch.no_grad():
-        pred = model(x_enc, x_mark, None, None, model_mask)
-    pred_np = pred.detach().cpu().numpy()[0] * target_scale
+    pred_np = predict_with_window_average(
+        model,
+        values,
+        train_mask,
+        window_starts,
+        actual_window_len,
+        seq_len,
+        args.eval_batch_size,
+        device,
+    ) * target_scale
 
     results = {
         "config": {
@@ -380,6 +594,15 @@ def main():
             "lr": args.lr,
             "epochs": args.epochs,
             "patience": args.patience,
+            "training_mode": "full_feature_sliding_window",
+            "window_len": actual_window_len,
+            "window_stride": args.window_stride,
+            "window_count": int(window_starts.shape[0]),
+            "train_window_count": int(train_window_starts.shape[0]),
+            "val_window_count": int(val_window_starts.shape[0]),
+            "batch_size": args.batch_size,
+            "eval_batch_size": args.eval_batch_size,
+            "prediction_aggregation": "average_over_overlapping_windows",
             "target_normalization": args.target_normalization,
             "target_scale": target_scale,
             "metrics_scale": "original",
